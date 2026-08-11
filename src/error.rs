@@ -7,7 +7,7 @@ use crate::header::WarcHeader;
 #[derive(Debug)]
 pub enum Error {
     /// An error occured identifing or parsing headers.
-    ParseHeaders(nom::Err<(Vec<u8>, nom::error::ErrorKind)>),
+    ParseHeaders(nom::Err<nom::error::Error<Vec<u8>>>),
     /// A header required by the standard is missing from the record. The record was well-formed,
     /// but invalid.
     MissingHeader(WarcHeader),
@@ -20,6 +20,9 @@ pub enum Error {
     ReadOverflow,
     /// The end of the record's body was found unexpectedly.
     UnexpectedEOB,
+    /// The `\r\n\r\n` terminator after the record's body was missing or malformed. The record
+    /// was read completely, but is invalid.
+    MalformedRecordTerminator,
 }
 
 impl fmt::Display for Error {
@@ -33,6 +36,7 @@ impl fmt::Display for Error {
             Error::ReadData(_) => write!(f, "Error reading data source."),
             Error::ReadOverflow => write!(f, "Read further than expected."),
             Error::UnexpectedEOB => write!(f, "Unexpected end of body."),
+            Error::MalformedRecordTerminator => write!(f, "Malformed record terminator."),
         }
     }
 }
