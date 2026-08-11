@@ -115,7 +115,7 @@ impl<R: BufRead> Iterator for RawRecordIter<R> {
             Err(e) => {
                 return Some(Err(Error::ParseHeaders(
                     e.map(|inner| (inner.input.to_owned(), inner.code)),
-                )))
+                )));
             }
             Ok(parsed) => parsed.1,
         };
@@ -300,7 +300,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
         match self.reader.read_exact(&mut crlfs) {
             Ok(()) => (),
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Err(Error::UnexpectedEOB)
+                return Err(Error::UnexpectedEOB);
             }
             Err(io) => return Err(Error::ReadData(io)),
         }
@@ -351,7 +351,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
             Err(e) => {
                 return Some(Err(Error::ParseHeaders(
                     e.map(|inner| (inner.input.to_owned(), inner.code)),
-                )))
+                )));
             }
             Ok(parsed) => parsed.1,
         };
@@ -387,9 +387,7 @@ mod iter_raw_tests {
 
     use crate::{WarcHeader, WarcReader};
     macro_rules! create_reader {
-        ($raw:expr) => {{
-            BufReader::new(Cursor::new($raw.get(..).unwrap()))
-        }};
+        ($raw:expr) => {{ BufReader::new(Cursor::new($raw.get(..).unwrap())) }};
     }
 
     #[test]
@@ -493,9 +491,7 @@ mod next_item_tests {
     use crate::WarcReader;
 
     macro_rules! create_reader {
-        ($raw:expr) => {{
-            BufReader::new(Cursor::new($raw.get(..).unwrap()))
-        }};
+        ($raw:expr) => {{ BufReader::new(Cursor::new($raw.get(..).unwrap())) }};
     }
 
     #[test]

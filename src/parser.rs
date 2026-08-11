@@ -1,9 +1,9 @@
 use nom::{
+    IResult, Parser,
     bytes::streaming::{tag, take, take_while1},
     character::streaming::{line_ending, not_line_ending, space0},
     error::ErrorKind,
     multi::many1,
-    IResult, Parser,
 };
 use std::str;
 
@@ -130,9 +130,9 @@ pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, &[u8])>
 #[cfg(test)]
 mod tests {
     use super::{header, headers, record, version};
-    use nom::error::ErrorKind;
     use nom::Err;
     use nom::Needed;
+    use nom::error::ErrorKind;
 
     #[test]
     fn version_parsing() {
