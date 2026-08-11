@@ -7,19 +7,15 @@ use nom::{
 };
 use std::str;
 
+fn verify_error(input: &[u8]) -> nom::Err<nom::error::Error<&[u8]>> {
+    nom::Err::Error(nom::error::Error::new(input, ErrorKind::Verify))
+}
+
 // TODO: evaluate the use of `ErrorKind::Verify` here.
 fn version(input: &[u8]) -> IResult<&[u8], &str> {
     let (input, (_, version, _)) = (tag("WARC/"), not_line_ending, line_ending).parse(input)?;
 
-    let version_str = match str::from_utf8(version) {
-        Err(_) => {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                ErrorKind::Verify,
-            )));
-        }
-        Ok(version) => version,
-    };
+    let version_str = str::from_utf8(version).map_err(|_| verify_error(input))?;
 
     Ok((input, version_str))
 }
@@ -72,38 +68,14 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)
     let mut warc_headers: Vec<(&str, &[u8])> = Vec::with_capacity(headers.len());
 
     for header in headers {
-        let token_str = match str::from_utf8(header.0) {
-            Err(_) => {
-                return Err(nom::Err::Error(nom::error::Error::new(
-                    input,
-                    ErrorKind::Verify,
-                )));
-            }
-            Ok(token) => token,
-        };
+        let token_str = str::from_utf8(header.0).map_err(|_| verify_error(input))?;
 
         if content_length.is_none() && token_str.eq_ignore_ascii_case("content-length") {
-            let value_str = match str::from_utf8(header.1) {
-                Err(_) => {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        ErrorKind::Verify,
-                    )));
-                }
-                Ok(value) => value,
-            };
-
-            match value_str.parse::<usize>() {
-                Err(_) => {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        ErrorKind::Verify,
-                    )));
-                }
-                Ok(len) => {
-                    content_length = Some(len);
-                }
-            }
+            let value_str = str::from_utf8(header.1).map_err(|_| verify_error(input))?;
+            let len = value_str
+                .parse::<usize>()
+                .map_err(|_| verify_error(input))?;
+            content_length = Some(len);
         }
 
         warc_headers.push((token_str, header.1));
