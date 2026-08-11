@@ -59,7 +59,7 @@ mod streaming_trait {
 
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
     /// An associated type indicated the record has a zero-length body.
-    pub struct EmptyBody();
+    pub struct EmptyBody;
     impl BodyKind for EmptyBody {
         fn content_length(&self) -> u64 {
             0
@@ -149,7 +149,7 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             record_id,
             record_type,
             truncated_type,
-            body: EmptyBody(),
+            body: EmptyBody,
         })
     }
 }
@@ -518,7 +518,7 @@ impl Record<EmptyBody> {
 impl Record<BufferedBody> {
     /// Strip the body from this record.
     pub fn strip_body(self) -> Record<EmptyBody> {
-        self.with_body_kind(EmptyBody())
+        self.with_body_kind(EmptyBody)
     }
 
     /// Return the body of this record.
