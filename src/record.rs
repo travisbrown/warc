@@ -222,7 +222,7 @@ pub struct Record<T: BodyKind> {
     body: T,
 }
 
-impl<T: BodyKind> Record<T> {
+impl Record<EmptyBody> {
     /// Create a new empty record with default values.
     ///
     /// Using a `RecordBuilder` is more efficient when creating records from known data.
@@ -232,11 +232,13 @@ impl<T: BodyKind> Record<T> {
     /// * WARC-Date: the current moment in time
     /// * WARC-Type: resource
     /// * WARC-Content-Length: 0
-    pub fn new() -> Record<EmptyBody> {
+    pub fn new() -> Self {
         Record::default()
     }
+}
 
-    /// Create a new empty record with a known body.
+impl Record<BufferedBody> {
+    /// Create a new record with a known body.
     ///
     /// Using a `RecordBuilder` is more efficient when creating records from known data.
     ///
@@ -245,13 +247,15 @@ impl<T: BodyKind> Record<T> {
     /// * WARC-Date: the current moment in time
     /// * WARC-Type: resource
     /// * WARC-Content-Length: `body.len()`
-    pub fn with_body<B: Into<Vec<u8>>>(body: B) -> Record<BufferedBody> {
+    pub fn with_body<B: Into<Vec<u8>>>(body: B) -> Self {
         Record {
             body: BufferedBody(body.into()),
             ..Record::default()
         }
     }
+}
 
+impl<T: BodyKind> Record<T> {
     /// Generate and return a new value suitable for use in the WARC-Record-ID header.
     ///
     /// # Compatibility
