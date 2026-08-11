@@ -36,23 +36,29 @@ impl<W: Write> WarcWriter<W> {
     where
         B: AsRef<[u8]>,
     {
+        let writer = &mut self.writer;
         let mut bytes_written = 0;
+        let mut emit = |data: &[u8]| -> io::Result<()> {
+            writer.write_all(data)?;
+            bytes_written += data.len();
+            Ok(())
+        };
 
-        bytes_written += self.writer.write(b"WARC/")?;
-        bytes_written += self.writer.write(headers.version.as_bytes())?;
-        bytes_written += self.writer.write(b"\r\n")?;
+        emit(b"WARC/")?;
+        emit(headers.version.as_bytes())?;
+        emit(b"\r\n")?;
 
         for (token, value) in headers.as_ref().iter() {
-            bytes_written += self.writer.write(token.to_string().as_bytes())?;
-            bytes_written += self.writer.write(b": ")?;
-            bytes_written += self.writer.write(value)?;
-            bytes_written += self.writer.write(b"\r\n")?;
+            emit(token.to_string().as_bytes())?;
+            emit(b": ")?;
+            emit(value)?;
+            emit(b"\r\n")?;
         }
-        bytes_written += self.writer.write(b"\r\n")?;
+        emit(b"\r\n")?;
 
-        bytes_written += self.writer.write(body.as_ref())?;
-        bytes_written += self.writer.write(b"\r\n")?;
-        bytes_written += self.writer.write(b"\r\n")?;
+        emit(body.as_ref())?;
+        emit(b"\r\n")?;
+        emit(b"\r\n")?;
 
         Ok(bytes_written)
     }
@@ -88,6 +94,45 @@ impl WarcWriter<BufWriter<fs::File>> {
         let writer = BufWriter::with_capacity(MB, file);
 
         Ok(WarcWriter::new(writer))
+    }
+}
+
+#[cfg(test)]
+mod write_raw_tests {
+    use super::WarcWriter;
+    use crate::{RawRecordHeader, WarcHeader};
+    use std::io::{self, Write};
+
+    /// A writer that accepts at most one byte per `write` call.
+    struct TrickleWriter(Vec<u8>);
+
+    impl Write for TrickleWriter {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            let n = data.len().min(1);
+            self.0.extend_from_slice(&data[..n]);
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn short_writes_do_not_truncate() {
+        let headers = RawRecordHeader {
+            version: "1.0".to_owned(),
+            headers: vec![(WarcHeader::WarcType, b"dunno".to_vec())]
+                .into_iter()
+                .collect(),
+        };
+
+        let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
+        let bytes_written = writer.write_raw(headers, b"12345").unwrap();
+
+        let expected: &[u8] = b"WARC/1.0\r\nwarc-type: dunno\r\n\r\n12345\r\n\r\n";
+        assert_eq!(writer.writer.0.as_slice(), expected);
+        assert_eq!(bytes_written, expected.len());
     }
 }
 
