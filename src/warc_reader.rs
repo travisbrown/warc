@@ -1,5 +1,5 @@
 use crate::parser;
-use crate::{BufferedBody, Error, RawRecordHeader, Record, StreamingBody};
+use crate::{BufferedBody, Error, MB, RawRecordHeader, Record, StreamingBody};
 
 use std::convert::TryInto;
 use std::fs;
@@ -9,8 +9,6 @@ use std::path::Path;
 
 #[cfg(feature = "gzip")]
 use libflate::gzip::MultiDecoder as GzipReader;
-
-const MB: usize = 1_048_576;
 
 /// A reader which iteratively parses WARC records from a stream.
 pub struct WarcReader<R> {
