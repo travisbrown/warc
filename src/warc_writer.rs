@@ -38,23 +38,23 @@ impl<W: Write> WarcWriter<W> {
     {
         let mut bytes_written = 0;
 
-        bytes_written += self.writer.write(&[87, 65, 82, 67, 47])?;
+        bytes_written += self.writer.write(b"WARC/")?;
         bytes_written += self.writer.write(headers.version.as_bytes())?;
-        bytes_written += self.writer.write(&[13, 10])?;
+        bytes_written += self.writer.write(b"\r\n")?;
 
         let mut headers: Vec<_> = headers.as_ref().iter().collect();
         headers.sort();
         for (token, value) in &headers {
             bytes_written += self.writer.write(token.to_string().as_bytes())?;
-            bytes_written += self.writer.write(&[58, 32])?;
+            bytes_written += self.writer.write(b": ")?;
             bytes_written += self.writer.write(value)?;
-            bytes_written += self.writer.write(&[13, 10])?;
+            bytes_written += self.writer.write(b"\r\n")?;
         }
-        bytes_written += self.writer.write(&[13, 10])?;
+        bytes_written += self.writer.write(b"\r\n")?;
 
         bytes_written += self.writer.write(body.as_ref())?;
-        bytes_written += self.writer.write(&[13, 10])?;
-        bytes_written += self.writer.write(&[13, 10])?;
+        bytes_written += self.writer.write(b"\r\n")?;
+        bytes_written += self.writer.write(b"\r\n")?;
 
         Ok(bytes_written)
     }
