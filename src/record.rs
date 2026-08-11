@@ -262,7 +262,7 @@ impl<T: BodyKind> Record<T> {
     /// The current implementation generates random values based on UUID version 4.
     ///
     pub fn generate_record_id() -> String {
-        format!("<{}>", Uuid::new_v4().to_urn())
+        format!("<{}>", Uuid::new_v4().urn())
     }
 
     fn parse_content_length(len: &str) -> Result<u64, WarcError> {
