@@ -1,0 +1,46 @@
+[package]
+name = "warc"
+description = "A Rust library for reading and writing WARC files"
+authors.workspace = true
+repository.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+license.workspace = true
+version.workspace = true
+
+[features]
+default = ["gzip"]
+gzip = ["libflate"]
+with_serde = ["serde"]
+
+[dependencies]
+chrono.workspace = true
+indexmap.workspace = true
+libflate = { workspace = true, optional = true }
+nom.workspace = true
+serde = { workspace = true, optional = true }
+thiserror.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# Only the `read_filtered` example parses URLs.
+url.workspace = true
+
+# These examples demonstrate gzip-compressed WARC files, so they are only built when the
+# feature they require is enabled; the remaining examples are still auto-discovered.
+[[example]]
+name = "read_gzip"
+required-features = ["gzip"]
+
+[[example]]
+name = "write_gzip"
+required-features = ["gzip"]
+
+[[example]]
+name = "read_filtered"
+required-features = ["gzip"]
