@@ -147,13 +147,27 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             })
             .and_then(|date| Record::<BufferedBody>::parse_record_date(&date))?;
 
+        let truncated_type = headers
+            .as_mut()
+            .shift_remove(&WarcHeader::Truncated)
+            .map(|vec| {
+                String::from_utf8(vec).map_err(|_| {
+                    WarcError::MalformedHeader(
+                        WarcHeader::Truncated,
+                        "not a UTF-8 string".to_string(),
+                    )
+                })
+            })
+            .transpose()?
+            .map(TruncatedType::from);
+
         Ok(Record {
             headers,
             record_date,
             record_id,
             record_type,
+            truncated_type,
             body: EmptyBody(),
-            ..Default::default()
         })
     }
 }
@@ -360,6 +374,10 @@ impl<T: BodyKind> Record<T> {
             WarcHeader::Date => Some(Cow::Owned(
                 self.date().to_rfc3339_opts(SecondsFormat::Secs, true),
             )),
+            WarcHeader::Truncated => self
+                .truncated_type
+                .as_ref()
+                .map(|truncated_type| Cow::Owned(truncated_type.to_string())),
             _ => self
                 .headers
                 .as_ref()
@@ -584,16 +602,14 @@ impl<'t, T: Read + 't> Record<StreamingBody<'t, T>> {
             body_vec
         };
 
-        let empty_record = Record {
+        Ok(Record {
             headers,
             record_date,
             record_id,
             record_type,
             truncated_type,
-            ..Default::default()
-        };
-
-        Ok(empty_record.add_body(buf))
+            body: BufferedBody(buf),
+        })
     }
 }
 
@@ -784,7 +800,7 @@ impl RecordBuilder {
 #[cfg(test)]
 mod record_tests {
     use crate::header::WarcHeader;
-    use crate::{BufferedBody, Record, RecordType};
+    use crate::{BufferedBody, Record, RecordType, TruncatedType};
 
     use chrono::prelude::*;
 
@@ -872,6 +888,23 @@ mod record_tests {
     }
 
     #[test]
+    fn get_header_truncated() {
+        let mut record = Record::<BufferedBody>::default();
+        assert!(record.header(WarcHeader::Truncated).is_none());
+
+        record.set_truncated_type(TruncatedType::Length);
+        assert_eq!(record.header(WarcHeader::Truncated).unwrap(), "length");
+
+        record
+            .set_header(WarcHeader::Truncated, "disconnect")
+            .unwrap();
+        assert_eq!(record.header(WarcHeader::Truncated).unwrap(), "disconnect");
+
+        record.clear_truncated_type();
+        assert!(record.header(WarcHeader::Truncated).is_none());
+    }
+
+    #[test]
     fn set_header_override_content_length() {
         let mut record = Record::<BufferedBody>::default();
         assert_eq!(record.header(WarcHeader::ContentLength).unwrap(), "0");
@@ -948,7 +981,7 @@ mod record_tests {
 #[cfg(test)]
 mod raw_tests {
     use crate::header::WarcHeader;
-    use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType};
+    use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType, TruncatedType};
 
     use indexmap::IndexMap;
     use std::convert::TryFrom;
@@ -1098,6 +1131,23 @@ mod raw_tests {
                 Err(Error::MalformedHeader(WarcHeader::ContentLength, _)) => {}
                 other => panic!("expected malformed content-length error, got {:?}", other),
             }
+        }
+    }
+
+    #[test]
+    fn verify_truncated_type_is_extracted() {
+        let headers = headers_with(WarcHeader::Truncated, b"length".to_vec());
+        let record = Record::<EmptyBody>::try_from(headers).unwrap();
+        assert_eq!(record.truncated_type(), &Some(TruncatedType::Length));
+        assert_eq!(record.header(WarcHeader::Truncated).unwrap(), "length");
+    }
+
+    #[test]
+    fn verify_non_utf8_header_value_is_rejected() {
+        let headers = headers_with(WarcHeader::TargetURI, vec![0xff, 0xfe]);
+        match Record::<EmptyBody>::try_from(headers) {
+            Err(Error::MalformedHeader(WarcHeader::TargetURI, _)) => {}
+            other => panic!("expected malformed target-uri error, got {:?}", other),
         }
     }
 

@@ -107,7 +107,10 @@ mod from_path_tests {
             version: "1.0".to_owned(),
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
-                (WarcHeader::ContentLength, body.len().to_string().into_bytes()),
+                (
+                    WarcHeader::ContentLength,
+                    body.len().to_string().into_bytes(),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -123,15 +126,21 @@ mod from_path_tests {
         let path = dir.path().join("truncate.warc");
 
         let mut writer = WarcWriter::from_path(&path).unwrap();
-        writer.write_raw(record_with_body(long_body), &long_body).unwrap();
+        writer
+            .write_raw(record_with_body(long_body), &long_body)
+            .unwrap();
         writer.into_inner().unwrap();
 
         let mut writer = WarcWriter::from_path(&path).unwrap();
-        writer.write_raw(record_with_body(short_body), &short_body).unwrap();
+        writer
+            .write_raw(record_with_body(short_body), &short_body)
+            .unwrap();
         writer.into_inner().unwrap();
 
         let mut expected_writer = WarcWriter::new(Vec::new());
-        expected_writer.write_raw(record_with_body(short_body), &short_body).unwrap();
+        expected_writer
+            .write_raw(record_with_body(short_body), &short_body)
+            .unwrap();
 
         assert_eq!(std::fs::read(&path).unwrap(), expected_writer.writer);
     }
