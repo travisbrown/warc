@@ -101,9 +101,13 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             .ok_or(WarcError::MissingHeader(WarcHeader::ContentLength))
             .and_then(|vec| {
                 String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
+                    WarcError::MalformedHeader(
+                        WarcHeader::ContentLength,
+                        "not a UTF-8 string".to_string(),
+                    )
                 })
-            })?;
+            })
+            .and_then(|len| Record::<EmptyBody>::parse_content_length(&len))?;
 
         let record_type = headers
             .as_mut()
@@ -125,7 +129,10 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             .ok_or(WarcError::MissingHeader(WarcHeader::RecordID))
             .and_then(|vec| {
                 String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
+                    WarcError::MalformedHeader(
+                        WarcHeader::RecordID,
+                        "not a UTF-8 string".to_string(),
+                    )
                 })
             })?;
 
@@ -922,7 +929,7 @@ mod record_tests {
 #[cfg(test)]
 mod raw_tests {
     use crate::header::WarcHeader;
-    use crate::{EmptyBody, RawRecordHeader, Record, RecordType};
+    use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType};
 
     use std::collections::HashMap;
     use std::convert::TryFrom;
@@ -1043,6 +1050,45 @@ mod raw_tests {
         };
 
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
+    }
+
+    fn headers_with(header: WarcHeader, value: Vec<u8>) -> RawRecordHeader {
+        let mut headers = RawRecordHeader {
+            version: "1.0".to_owned(),
+            headers: vec![
+                (WarcHeader::WarcType, b"dunno".to_vec()),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (
+                    WarcHeader::RecordID,
+                    b"<urn:test:basic-record:record-0>".to_vec(),
+                ),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        headers.as_mut().insert(header, value);
+        headers
+    }
+
+    #[test]
+    fn verify_malformed_content_length_blames_content_length() {
+        for bad_value in [&b"not-a-number"[..], &[0xff, 0xfe][..]] {
+            let headers = headers_with(WarcHeader::ContentLength, bad_value.to_vec());
+            match Record::<EmptyBody>::try_from(headers) {
+                Err(Error::MalformedHeader(WarcHeader::ContentLength, _)) => {}
+                other => panic!("expected malformed content-length error, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn verify_malformed_record_id_blames_record_id() {
+        let headers = headers_with(WarcHeader::RecordID, vec![0xff, 0xfe]);
+        match Record::<EmptyBody>::try_from(headers) {
+            Err(Error::MalformedHeader(WarcHeader::RecordID, _)) => {}
+            other => panic!("expected malformed record-id error, got {:?}", other),
+        }
     }
 
     #[test]
