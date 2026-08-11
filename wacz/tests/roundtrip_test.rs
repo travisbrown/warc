@@ -1,0 +1,226 @@
+//! A round trip through the WACZ writer and reader, covering plain and gzip WARC members.
+
+use std::borrow::Cow;
+use std::io::{Cursor, Write};
+
+use chrono::{TimeZone, Utc};
+use libflate::gzip;
+use warc::{RecordBuilder, RecordType, WarcHeader, WarcWriter};
+use warc_wacz::cdxj;
+use warc_wacz::pages::{Page, PageListHeader};
+use warc_wacz::reader::WaczReader;
+use warc_wacz::writer::{PackageMetadata, WaczWriter};
+
+const URL: &str = "https://www.example.com/page";
+const BODY: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html>hello</html>";
+
+/// Build the serialized bytes of a single-record WARC file for the test capture.
+fn warc_bytes() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let record = RecordBuilder::default()
+        .warc_type(RecordType::Response)
+        .header(WarcHeader::TargetURI, URL)
+        .body(BODY.to_vec())
+        .build()?;
+
+    let mut bytes = Vec::new();
+    let mut writer = WarcWriter::new(&mut bytes);
+    writer.write(&record)?;
+
+    Ok(bytes)
+}
+
+/// Build a WACZ file in memory containing one WARC member, one index, and one page.
+fn build_wacz(warc_name: &str, warc_data: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut writer = WaczWriter::new(Cursor::new(Vec::new()));
+    writer.add_warc(warc_name, warc_data)?;
+
+    let capture_time = Utc.with_ymd_and_hms(2020, 10, 7, 21, 22, 36).unwrap();
+
+    let item = cdxj::Item {
+        key: Cow::Owned(cdxj::search_key(URL)?),
+        timestamp: capture_time.into(),
+        fields: cdxj::Fields {
+            url: Cow::Borrowed(URL),
+            digest: None,
+            mime: Some(Cow::Borrowed("text/html")),
+            status: Some(200),
+            offset: Some(0),
+            length: Some(warc_data.len() as u64),
+            filename: Some(Cow::Borrowed(warc_name)),
+            extra: serde_json::Map::new(),
+        },
+    };
+
+    writer.add_index("index.cdx", [&item])?;
+
+    let page = Page {
+        url: Cow::Borrowed(URL),
+        ts: capture_time,
+        id: Some(Cow::Borrowed("1db0ef709a")),
+        title: Some(Cow::Borrowed("Example Domain")),
+        text: None,
+        size: Some(BODY.len() as u64),
+        extra: serde_json::Map::new(),
+    };
+
+    writer.add_pages(&PageListHeader::default(), [&page])?;
+
+    let metadata = PackageMetadata {
+        title: Some("Test collection".to_owned()),
+        main_page_url: Some(URL.to_owned()),
+        main_page_date: Some(capture_time),
+        ..PackageMetadata::default()
+    };
+
+    Ok(writer.finish(metadata)?.into_inner())
+}
+
+/// Assert that a built WACZ file round trips through the reader.
+fn assert_round_trip(warc_name: &str, warc_data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let wacz = build_wacz(warc_name, warc_data)?;
+    let mut reader = WaczReader::new(Cursor::new(wacz))?;
+
+    let package = reader.data_package()?;
+    let warc_path = format!("archive/{warc_name}");
+
+    assert_eq!(package.wacz_version, "1.1.1");
+    assert_eq!(package.title.as_deref(), Some("Test collection"));
+    assert_eq!(package.main_page_url.as_deref(), Some(URL));
+    assert!(package.created.is_some());
+    assert_eq!(package.resources.len(), 3);
+    assert!(
+        package
+            .resources
+            .iter()
+            .any(|resource| resource.path == warc_path)
+    );
+
+    let digest = reader
+        .data_package_digest()?
+        .expect("digest file should be present");
+
+    assert_eq!(digest.path, "datapackage.json");
+
+    assert_eq!(
+        reader.warc_paths().collect::<Vec<_>>(),
+        vec![warc_path.clone()]
+    );
+    assert_eq!(
+        reader.index_paths().collect::<Vec<_>>(),
+        vec!["indexes/index.cdx"]
+    );
+
+    let pages = reader.pages()?.collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].url, URL);
+    assert_eq!(pages[0].title.as_deref(), Some("Example Domain"));
+
+    let items = reader
+        .index("indexes/index.cdx")?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].key, "com,example,www)/page");
+    assert_eq!(items[0].fields.filename.as_deref(), Some(warc_name));
+
+    let records = reader
+        .warc(&warc_path)?
+        .iter_records()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].body(), BODY);
+    assert_eq!(
+        records[0].header(WarcHeader::TargetURI).as_deref(),
+        Some(URL)
+    );
+
+    let verification = reader.verify()?;
+
+    assert!(verification.is_success());
+    // The three resources plus the manifest itself, which is covered by the digest file.
+    assert_eq!(verification.verified.len(), 4);
+
+    Ok(())
+}
+
+#[test]
+fn round_trip_with_plain_warc_member() -> Result<(), Box<dyn std::error::Error>> {
+    assert_round_trip("data.warc", &warc_bytes()?)
+}
+
+#[test]
+fn round_trip_with_gzip_warc_member() -> Result<(), Box<dyn std::error::Error>> {
+    let mut encoder = gzip::Encoder::new(Vec::new())?;
+    encoder.write_all(&warc_bytes()?)?;
+    let compressed = encoder.finish().into_result()?;
+
+    assert_round_trip("data.warc.gz", &compressed)
+}
+
+#[test]
+fn create_refuses_an_existing_output() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("test.wacz");
+    std::fs::write(&path, b"existing")?;
+
+    assert!(WaczWriter::create(&path).is_err());
+
+    Ok(())
+}
+
+#[test]
+fn write_and_open_from_paths() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let warc_path = directory.path().join("data.warc");
+    std::fs::write(&warc_path, warc_bytes()?)?;
+
+    let wacz_path = directory.path().join("test.wacz");
+    let mut writer = WaczWriter::create(&wacz_path)?;
+    writer.add_warc_from_path(&warc_path)?;
+    writer.add_pages(&PageListHeader::default(), [])?;
+    writer.finish(PackageMetadata::default())?;
+
+    let mut reader = WaczReader::open(&wacz_path)?;
+
+    assert!(reader.verify()?.is_success());
+    assert_eq!(
+        reader.warc_paths().collect::<Vec<_>>(),
+        vec!["archive/data.warc"]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn verify_reports_missing_and_mismatched_members() -> Result<(), Box<dyn std::error::Error>> {
+    // A hand-rolled container whose manifest lists a member that is absent and misstates the
+    // hash of one that is present.
+    let manifest = concat!(
+        "{\"profile\": \"data-package\", \"wacz_version\": \"1.1.1\", \"resources\": [",
+        "{\"name\": \"pages.jsonl\", \"path\": \"pages/pages.jsonl\", ",
+        "\"hash\": \"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\", ",
+        "\"bytes\": 0}, ",
+        "{\"name\": \"missing.warc\", \"path\": \"archive/missing.warc\", ",
+        "\"hash\": \"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\", ",
+        "\"bytes\": 0}]}",
+    );
+
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("datapackage.json", options)?;
+    zip.write_all(manifest.as_bytes())?;
+    zip.start_file("pages/pages.jsonl", options)?;
+    zip.write_all(b"{\"format\": \"json-pages-1.0\", \"id\": \"pages\", \"title\": \"t\"}\n")?;
+    let bytes = zip.finish()?.into_inner();
+
+    let mut reader = WaczReader::new(Cursor::new(bytes))?;
+    let verification = reader.verify()?;
+
+    assert!(!verification.is_success());
+    assert_eq!(verification.mismatched, vec!["pages/pages.jsonl"]);
+    assert_eq!(verification.missing, vec!["archive/missing.warc"]);
+
+    Ok(())
+}
