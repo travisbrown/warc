@@ -52,11 +52,7 @@ impl<R: BufRead> WarcReader<R> {
 impl WarcReader<BufReader<fs::File>> {
     /// Create a new reader which reads from file.
     pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
+        let file = fs::File::open(&path)?;
         let reader = BufReader::with_capacity(MB, file);
 
         Ok(WarcReader::new(reader))
@@ -376,6 +372,45 @@ impl<R: BufRead> StreamingIter<'_, R> {
             }
             Err(e) => Some(Err(e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod from_path_tests {
+    use crate::WarcReader;
+
+    #[test]
+    fn reads_existing_file() {
+        let raw: &[u8] = b"\
+            WARC/1.0\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:from-path:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reads_existing_file.warc");
+        std::fs::write(&path, raw).unwrap();
+
+        let reader = WarcReader::from_path(&path).unwrap();
+        let record = reader.iter_records().next().unwrap().unwrap();
+        assert_eq!(record.warc_id(), "<urn:test:from-path:record-0>");
+        assert_eq!(record.body(), b"12345");
+    }
+
+    #[test]
+    fn missing_file_is_not_found_and_not_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing_file.warc");
+        let err = match WarcReader::from_path(&path) {
+            Ok(_) => panic!("expected opening a missing file to fail"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(!path.exists());
     }
 }
 

@@ -29,3 +29,6 @@ features = ["derive"]
 default = ["gzip"]
 gzip = ["libflate"]
 with_serde = ["serde"]
+
+[dev-dependencies]
+tempfile = "3"
