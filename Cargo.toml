@@ -11,26 +11,19 @@ keywords = ["warc", "web", "archive"]
 edition = "2024"
 rust-version = "1.85"
 
-[dependencies]
-chrono = "0.4"
-indexmap = "2"
-nom = "8"
-thiserror = "2"
-uuid = { version = "1", features = ["v4"] }
-
-[dependencies.libflate]
-version = "2"
-optional = true
-
-[dependencies.serde]
-version = "1"
-optional = true
-features = ["derive"]
-
 [features]
 default = ["gzip"]
 gzip = ["libflate"]
 with_serde = ["serde"]
+
+[dependencies]
+chrono = "0.4"
+indexmap = "2"
+libflate = { version = "2", optional = true }
+nom = "8"
+serde = { version = "1", optional = true, features = ["derive"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["derive"] }
