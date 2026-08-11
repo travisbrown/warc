@@ -1,0 +1,30 @@
+[package]
+name = "warc-wacz"
+description = "Reading and writing web archive collections in the WACZ format"
+authors.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/crate/warc-wacz/"
+keywords = ["wacz", "warc", "web", "archive"]
+edition.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+chrono = { workspace = true, features = ["serde"] }
+data-encoding.workspace = true
+libflate.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+url.workspace = true
+warc = { version = "0.4.0", path = "../core/", default-features = false }
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# Integration tests construct gzip WARC members and hand-rolled ZIP containers directly.
+libflate.workspace = true
+zip.workspace = true

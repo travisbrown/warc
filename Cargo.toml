@@ -1,5 +1,5 @@
 [workspace]
-members = ["core"]
+members = ["core", "wacz"]
 resolver = "3"
 
 [workspace.package]
@@ -15,11 +15,17 @@ version = "0.4.0"
 
 [workspace.dependencies]
 chrono = "0.4"
+data-encoding = "2"
 indexmap = "2"
 libflate = "2"
 nom = "8"
 serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.11"
 tempfile = "3"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
+# Only the DEFLATE codec is needed: WARC and CDX members are stored, and gzip payloads are
+# handled by `libflate` so that compressed members can be read as streams.
+zip = { version = "7", default-features = false, features = ["deflate"] }
