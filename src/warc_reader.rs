@@ -98,8 +98,11 @@ fn read_header_block<R: BufRead>(
 
 /// Parse a raw header block into its headers and the expected body length.
 fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> {
-    let (_, (version, headers, expected_body_len)) = parser::headers(buffer)
-        .map_err(|e| Error::ParseHeaders(e.map(|inner| (inner.input.to_owned(), inner.code))))?;
+    let (_, (version, headers, expected_body_len)) = parser::headers(buffer).map_err(|e| {
+        Error::ParseHeaders(
+            e.map(|inner| nom::error::Error::new(inner.input.to_owned(), inner.code)),
+        )
+    })?;
 
     let headers = RawRecordHeader {
         version: version.to_owned(),
@@ -130,9 +133,7 @@ fn read_body<R: BufRead>(reader: &mut R, expected_body_len: usize) -> Result<Vec
         // we expect 4 characters (`\r\n\r\n`) after the body
         if bytes_read == 2 && body_bytes_read == maximum_read_range {
             if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
-                let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
-                    nom::Err::Failure((vec![0x0d, 0x0a, 0x0d, 0x0a], nom::error::ErrorKind::Tag));
-                return Err(Error::ParseHeaders(synthetic_err));
+                return Err(Error::MalformedRecordTerminator);
             }
             body_buffer.truncate(expected_body_len);
             return Ok(body_buffer);
@@ -267,12 +268,10 @@ impl<R: BufRead> StreamingIter<'_, R> {
             Err(io) => return Err(Error::ReadData(io)),
         }
 
-        if &crlfs == b"\x0d\x0a\x0d\x0a" {
+        if &crlfs == b"\r\n\r\n" {
             Ok(())
         } else {
-            let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
-                nom::Err::Failure((vec![0x0d, 0x0a, 0x0d, 0x0a], nom::error::ErrorKind::Tag));
-            Err(Error::ParseHeaders(synthetic_err))
+            Err(Error::MalformedRecordTerminator)
         }
     }
 
@@ -377,7 +376,7 @@ mod iter_raw_tests {
 
         let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
         match reader.next().unwrap() {
-            Err(Error::ParseHeaders(_)) => {}
+            Err(Error::MalformedRecordTerminator) => {}
             other => panic!(
                 "expected a parse error for an invalid record terminator, got {:?}",
                 other.map(|(headers, body)| (headers, String::from_utf8_lossy(&body).to_string()))

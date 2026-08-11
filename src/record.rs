@@ -186,6 +186,7 @@ impl Clone for RecordBuilder {
             WarcError::MalformedHeader(h, e) => WarcError::MalformedHeader(h.clone(), e.clone()),
             WarcError::ReadOverflow => WarcError::ReadOverflow,
             WarcError::UnexpectedEOB => WarcError::UnexpectedEOB,
+            WarcError::MalformedRecordTerminator => WarcError::MalformedRecordTerminator,
         });
         RecordBuilder {
             value: self.value.clone(),
