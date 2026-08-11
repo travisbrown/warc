@@ -639,29 +639,23 @@ impl RecordBuilder {
 
     /// Create or replace an arbitrary header of the record under construction.
     pub fn header<V: Into<Vec<u8>>>(mut self, key: WarcHeader, value: V) -> Self {
-        self.broken_headers.insert(key.clone(), value.into());
+        let value = value.into();
+        let result = match std::str::from_utf8(&value) {
+            Ok(string) => self.value.set_header(key.clone(), string).map(|_| ()),
+            Err(_) => Err(WarcError::MalformedHeader(
+                key.clone(),
+                "not a UTF-8 string".to_string(),
+            )),
+        };
 
-        let is_ok;
-        match std::str::from_utf8(self.broken_headers.get(&key).unwrap()) {
-            Ok(string) => {
-                if let Err(e) = self.value.set_header(key.clone(), string) {
-                    self.last_error = Some(e);
-                    is_ok = false;
-                } else {
-                    is_ok = true;
-                }
+        match result {
+            Ok(()) => {
+                self.broken_headers.shift_remove(&key);
             }
-            Err(_) => {
-                is_ok = false;
-                self.last_error = Some(WarcError::MalformedHeader(
-                    key.clone(),
-                    "not a UTF-8 string".to_string(),
-                ));
+            Err(e) => {
+                self.last_error = Some(e);
+                self.broken_headers.insert(key, value);
             }
-        }
-
-        if is_ok {
-            self.broken_headers.shift_remove(&key);
         }
 
         self
