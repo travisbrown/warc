@@ -84,16 +84,56 @@ impl<W: Write> WarcWriter<BufWriter<W>> {
 
 impl WarcWriter<BufWriter<fs::File>> {
     /// Create a new writer which writes to a file.
+    ///
+    /// The file is created if it does not exist and truncated if it does, following
+    /// [`std::fs::File::create`] semantics: this writer always produces a fresh archive.
+    /// To add records to an existing WARC file instead, open the file with
+    /// [`std::fs::OpenOptions`] in append mode and pass it to [`WarcWriter::new`].
     pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
+        let file = fs::File::create(&path)?;
         let writer = BufWriter::with_capacity(MB, file);
 
         Ok(WarcWriter::new(writer))
+    }
+}
+
+#[cfg(test)]
+mod from_path_tests {
+    use super::WarcWriter;
+    use crate::{RawRecordHeader, WarcHeader};
+
+    fn record_with_body(body: &[u8]) -> RawRecordHeader {
+        RawRecordHeader {
+            version: "1.0".to_owned(),
+            headers: vec![
+                (WarcHeader::WarcType, b"dunno".to_vec()),
+                (WarcHeader::ContentLength, body.len().to_string().into_bytes()),
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    #[test]
+    fn overwriting_a_longer_file_truncates_it() {
+        let long_body = &b"a-long-body-that-outlasts-the-second-record"[..];
+        let short_body = &b"short"[..];
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncate.warc");
+
+        let mut writer = WarcWriter::from_path(&path).unwrap();
+        writer.write_raw(record_with_body(long_body), &long_body).unwrap();
+        writer.into_inner().unwrap();
+
+        let mut writer = WarcWriter::from_path(&path).unwrap();
+        writer.write_raw(record_with_body(short_body), &short_body).unwrap();
+        writer.into_inner().unwrap();
+
+        let mut expected_writer = WarcWriter::new(Vec::new());
+        expected_writer.write_raw(record_with_body(short_body), &short_body).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), expected_writer.writer);
     }
 }
 
@@ -139,13 +179,15 @@ mod write_raw_tests {
 #[cfg(feature = "gzip")]
 impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
     /// Create a new writer which writes to a GZIP-compressed file.
+    ///
+    /// The file is created if it does not exist and truncated if it does, following
+    /// [`std::fs::File::create`] semantics: this writer always produces a fresh archive.
+    /// To add records to an existing compressed WARC file instead, open the file with
+    /// [`std::fs::OpenOptions`] in append mode and wrap it in a new gzip encoder passed to
+    /// [`WarcWriter::new`]; the appended records form a new gzip member, which is valid in
+    /// a multi-member WARC file.
     pub fn from_path_gzip<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
+        let file = fs::File::create(&path)?;
         let gzip_stream = GzipWriter::new(file)?;
         let writer = BufWriter::with_capacity(MB, gzip_stream);
 
