@@ -442,6 +442,18 @@ impl<T: BodyKind> Record<T> {
         self.body.content_length()
     }
 
+    /// Replace this record's body representation, keeping all other fields.
+    fn with_body_kind<U: BodyKind>(self, body: U) -> Record<U> {
+        Record {
+            headers: self.headers,
+            record_date: self.record_date,
+            record_id: self.record_id,
+            record_type: self.record_type,
+            truncated_type: self.truncated_type,
+            body,
+        }
+    }
+
     /// Build the raw header block for this record without consuming it.
     ///
     /// Headers appear in conventional WARC order: record-level headers first,
@@ -487,22 +499,7 @@ impl<T: BodyKind> Record<T> {
 impl Record<EmptyBody> {
     /// Add a known body to this record, transforming it into a buffered body record.
     pub fn add_body<B: Into<Vec<u8>>>(self, body: B) -> Record<BufferedBody> {
-        let Self {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: _,
-        } = self;
-        Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: BufferedBody(body.into()),
-        }
+        self.with_body_kind(BufferedBody(body.into()))
     }
 
     /// Add a streaming body to this record, whose expected size may not match the actual stream
@@ -512,45 +509,14 @@ impl Record<EmptyBody> {
         stream: &'r mut R,
         len: &'r mut u64,
     ) -> std::io::Result<Record<StreamingBody<'r, R>>> {
-        let Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            ..
-        } = self;
-
-        Ok(Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: StreamingBody::new(stream, len),
-        })
+        Ok(self.with_body_kind(StreamingBody::new(stream, len)))
     }
 }
 
 impl Record<BufferedBody> {
     /// Strip the body from this record.
     pub fn strip_body(self) -> Record<EmptyBody> {
-        let Self {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: _,
-        } = self;
-        Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: EmptyBody(),
-        }
+        self.with_body_kind(EmptyBody())
     }
 
     /// Return the body of this record.
@@ -584,30 +550,11 @@ impl<'t, T: Read + 't> Record<StreamingBody<'t, T>> {
     ///
     /// This method can fail if the underlying stream returns an error. If this happens, the
     /// state of the stream is not guaranteed.
-    pub fn into_buffered(self) -> std::io::Result<Record<BufferedBody>> {
-        let Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            mut body,
-        } = self;
+    pub fn into_buffered(mut self) -> std::io::Result<Record<BufferedBody>> {
+        let mut buf = Vec::with_capacity(self.body.len() as usize);
+        self.body.read_to_end(&mut buf)?;
 
-        let buf = {
-            let mut body_vec = Vec::with_capacity(body.len() as usize);
-            body.read_to_end(&mut body_vec)?;
-            body_vec
-        };
-
-        Ok(Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: BufferedBody(buf),
-        })
+        Ok(self.with_body_kind(BufferedBody(buf)))
     }
 }
 
