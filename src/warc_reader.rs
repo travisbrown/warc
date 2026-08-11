@@ -131,6 +131,11 @@ fn read_body<R: BufRead>(reader: &mut R, expected_body_len: usize) -> Result<Vec
 
         // we expect 4 characters (`\r\n\r\n`) after the body
         if bytes_read == 2 && body_bytes_read == maximum_read_range {
+            if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
+                let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
+                    nom::Err::Failure((vec![0x0d, 0x0a, 0x0d, 0x0a], nom::error::ErrorKind::Tag));
+                return Err(Error::ParseHeaders(synthetic_err));
+            }
             body_buffer.truncate(expected_body_len);
             return Ok(body_buffer);
         }
@@ -356,9 +361,31 @@ mod iter_raw_tests {
     use std::io::{BufReader, Cursor};
     use std::iter::FromIterator;
 
-    use crate::{WarcHeader, WarcReader};
+    use crate::{Error, WarcHeader, WarcReader};
     macro_rules! create_reader {
         ($raw:expr) => {{ BufReader::new(Cursor::new($raw.get(..).unwrap())) }};
+    }
+
+    #[test]
+    fn invalid_record_terminator() {
+        // After the 4-byte body, the record ends with `c\nd\n` instead of `\r\n\r\n`; the byte
+        // counts line up, but the terminator bytes are wrong.
+        let raw = b"\
+            WARC/1.0\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 4\r\n\
+            \r\n\
+            a\nb\nc\nd\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::ParseHeaders(_)) => {}
+            other => panic!(
+                "expected a parse error for an invalid record terminator, got {:?}",
+                other.map(|(headers, body)| (headers, String::from_utf8_lossy(&body).to_string()))
+            ),
+        }
     }
 
     #[test]
