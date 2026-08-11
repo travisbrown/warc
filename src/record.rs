@@ -351,9 +351,7 @@ impl<T: BodyKind> Record<T> {
     /// Return the WARC header requested if present in this record, or `None`.
     pub fn header(&self, header: WarcHeader) -> Option<Cow<'_, str>> {
         match &header {
-            WarcHeader::ContentLength => {
-                Some(Cow::Owned(format!("{}", self.body.content_length())))
-            }
+            WarcHeader::ContentLength => Some(Cow::Owned(self.body.content_length().to_string())),
             WarcHeader::RecordID => Some(Cow::Borrowed(self.warc_id())),
             WarcHeader::WarcType => Some(Cow::Owned(self.record_type.to_string())),
             WarcHeader::Date => Some(Cow::Owned(
