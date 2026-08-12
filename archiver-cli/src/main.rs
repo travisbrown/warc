@@ -102,7 +102,7 @@ struct Opts {
     /// Store the WARC member uncompressed instead of gzip-compressed.
     #[clap(long)]
     no_gzip: bool,
-    /// Write the index as a compressed `ZipNum` pair (index.cdx.gz and index.idx) instead of a
+    /// Write the index as a compressed `ZipNum` pair (`index.cdx.gz` and `index.idx`) instead of a
     /// plain-text index.cdx.
     #[clap(long)]
     compressed_index: bool,
