@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use warc_wacz::writer::IndexFormat;
+// Re-exported so that consumers can build a full `Config` without depending on `warc-wacz`.
+pub use warc_wacz::writer::IndexFormat;
 
 /// The default `User-Agent` header value, identifying this crate and its version.
 pub const DEFAULT_USER_AGENT: &str =
@@ -12,6 +13,9 @@ pub const DEFAULT_USER_AGENT: &str =
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     /// The `User-Agent` header value sent with every request.
+    ///
+    /// The value must be a valid HTTP header value (in particular, it cannot contain line
+    /// breaks); [`Archiver::new`](crate::client::Archiver::new) rejects anything else.
     pub user_agent: String,
     /// The timeout for each request, from connecting until the response body has been read.
     pub timeout: Duration,
@@ -29,11 +33,18 @@ pub struct Config {
     /// The format of the CDXJ index members written into the WACZ file: a plain-text
     /// `index.cdx`, or a `ZipNum` compressed `index.cdx.gz` and `index.idx` pair.
     pub index_format: IndexFormat,
+    /// The number of URLs downloaded concurrently.
+    ///
+    /// Captures are always written to the archive in input order; raising this only allows up
+    /// to this many downloads (each including its full redirect chain) to be in flight at once.
+    /// A value of zero is treated as one.
+    pub concurrency: usize,
 }
 
 impl Default for Config {
     /// The default configuration: this crate's `User-Agent`, a 30-second timeout, at most ten
-    /// redirects per URL, a gzip-compressed WARC member, and a plain-text index.
+    /// redirects per URL, one download at a time, a gzip-compressed WARC member, and a
+    /// plain-text index.
     fn default() -> Self {
         Self {
             user_agent: DEFAULT_USER_AGENT.to_owned(),
@@ -41,6 +52,7 @@ impl Default for Config {
             max_redirects: 10,
             gzip_warc: true,
             index_format: IndexFormat::Plain,
+            concurrency: 1,
         }
     }
 }

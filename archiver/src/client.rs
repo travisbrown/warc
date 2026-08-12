@@ -1,15 +1,20 @@
 //! The archiving client.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
+use std::sync::{Mutex, mpsc};
+use std::thread;
 
 use chrono::{DateTime, Utc};
 use libflate::gzip;
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, LOCATION, USER_AGENT};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, LOCATION, USER_AGENT};
 use reqwest::redirect::Policy;
+use sha2::Digest as _;
 use url::Url;
 use warc::{BufferedBody, Record, RecordBuilder, RecordType, WarcHeader, WarcWriter};
 use warc_wacz::cdxj;
@@ -43,9 +48,20 @@ pub enum Error {
     /// A URL to be archived could not be parsed.
     #[error(transparent)]
     InvalidUrl(#[from] url::ParseError),
+    /// A URL to be archived contains credentials.
+    ///
+    /// Credentials are rejected rather than archived: the HTTP layer would send them as an
+    /// `Authorization` header, so capturing the exchange would either leak the secret into the
+    /// archive or misrepresent what was sent. The URL carried here has its credentials removed
+    /// so that the error is safe to log.
+    #[error("URL contains credentials: {0}")]
+    CredentialedUrl(String),
     /// A URL to be archived does not have a host.
     #[error("URL has no host: {0}")]
     MissingHost(String),
+    /// The configured `User-Agent` is not a valid HTTP header value.
+    #[error("invalid User-Agent header value: {0:?}")]
+    InvalidUserAgent(String),
     /// A CDXJ search key could not be derived for a URL.
     #[error(transparent)]
     Index(#[from] cdxj::Error),
@@ -82,7 +98,7 @@ impl ArchiveSummary {
 pub struct CaptureSummary {
     /// The URL as requested.
     pub url: String,
-    /// When the final response was received.
+    /// When the capture of the final response began (the `WARC-Date` of its records).
     pub date: DateTime<Utc>,
     /// The status code of the final response.
     pub status: u16,
@@ -93,6 +109,10 @@ pub struct CaptureSummary {
 }
 
 /// A URL which could not be captured.
+///
+/// Hops of a redirect chain captured before the failure are still recorded in the archive and
+/// its index; only the page entry, which describes a final response that was never received, is
+/// omitted.
 #[derive(Debug)]
 pub struct Failure {
     /// The URL as requested.
@@ -113,7 +133,79 @@ struct Exchange {
     response: Vec<u8>,
     payload_digest: Sha256Digest,
     payload_length: u64,
-    location: Option<Url>,
+}
+
+/// A completed capture travelling from a worker thread to the writer: the input position and
+/// URL, the exchanges captured, and the error that ended the chain early, if any.
+type CaptureOutcome = (usize, String, Vec<Exchange>, Option<Error>);
+
+/// The collection members accumulated as captures are recorded, around the spooled WARC member.
+struct Collection {
+    spool: BufWriter<File>,
+    /// The offset in the WARC member at which the next record will be written.
+    offset: u64,
+    warcinfo_id: String,
+    warc_name: &'static str,
+    gzip: bool,
+    summary: ArchiveSummary,
+    items: Vec<cdxj::Item<'static>>,
+    page_list: Vec<Page<'static>>,
+}
+
+impl Collection {
+    /// Record the outcome of capturing one URL: write and index every captured hop, then add a
+    /// page entry and capture summary on success, or a failure entry otherwise.
+    fn record(
+        &mut self,
+        url: String,
+        exchanges: Vec<Exchange>,
+        error: Option<Error>,
+    ) -> Result<(), Error> {
+        let redirects = exchanges.len().saturating_sub(1);
+        let mut last = None;
+
+        for exchange in exchanges {
+            last = Some((exchange.date, exchange.status, exchange.payload_length));
+
+            let (item, written) = write_exchange(
+                &mut self.spool,
+                exchange,
+                &self.warcinfo_id,
+                self.offset,
+                self.warc_name,
+                self.gzip,
+            )?;
+            self.items.push(item);
+            self.offset += written;
+        }
+
+        if let Some(error) = error {
+            self.summary.failures.push(Failure { url, error });
+        } else {
+            let (date, status, size) =
+                last.expect("a capture without an error has at least one exchange");
+
+            self.page_list.push(Page {
+                url: Cow::Owned(url.clone()),
+                ts: date,
+                id: None,
+                title: None,
+                text: None,
+                size: Some(size),
+                extra: serde_json::Map::new(),
+            });
+
+            self.summary.captures.push(CaptureSummary {
+                url,
+                date,
+                status,
+                size,
+                redirects,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 /// An HTTP client which downloads lists of URLs into WACZ web archive collections.
@@ -121,7 +213,11 @@ struct Exchange {
 /// Each URL is fetched with a `GET` request, following redirects up to the configured limit;
 /// every hop is recorded in the WARC member as a response record and a request record holding
 /// the full HTTP messages, indexed by an entry in the CDXJ index member. Each URL also receives
-/// a page list entry describing its final response.
+/// a page list entry describing its final response. When a download fails partway through a
+/// redirect chain, the hops already captured are still recorded and the URL is reported as a
+/// failure.
+///
+/// The client is blocking: creating or using it from within an async runtime panics.
 #[derive(Clone, Debug)]
 pub struct Archiver {
     client: Client,
@@ -133,11 +229,28 @@ impl Archiver {
     ///
     /// Requests are made over HTTP/1.1 only, so that the recorded messages match the wire
     /// format, and redirects are followed (and captured) by the archiver itself.
+    ///
+    /// # Panics
+    ///
+    /// The underlying blocking HTTP client cannot be created or used from within an async
+    /// runtime and panics if that is attempted; construct and use the archiver from a
+    /// synchronous context (for example a dedicated thread).
     pub fn new(config: Config) -> Result<Self, Error> {
+        // Building the header value up front validates the configured `User-Agent`: a value
+        // with embedded line breaks would otherwise forge header lines in the rendered request
+        // and break every request sent.
+        let user_agent = HeaderValue::from_str(&config.user_agent)
+            .map_err(|_| Error::InvalidUserAgent(config.user_agent.clone()))?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, user_agent);
+        headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+
         let client = Client::builder()
             .http1_only()
             .timeout(config.timeout)
             .redirect(Policy::none())
+            .default_headers(headers)
             .build()?;
 
         Ok(Self { client, config })
@@ -182,69 +295,45 @@ impl Archiver {
         let gzip = self.config.gzip_warc;
         let warc_name = if gzip { GZIP_WARC_NAME } else { WARC_NAME };
 
-        let mut summary = ArchiveSummary::default();
-        let mut items = Vec::new();
-        let mut page_list = Vec::new();
-
-        // The WARC member is spooled to an unlinked temporary file so that response bodies never
-        // need to be held in memory all at once.
+        // The WARC member is spooled to an unlinked temporary file so that response bodies
+        // never need to be held in memory all at once.
         let mut spool = BufWriter::new(tempfile::tempfile()?);
 
         let warcinfo = warcinfo_record(warc_name)?;
         let warcinfo_id = warcinfo.warc_id().to_owned();
-        let (mut offset, _) = write_record(&mut spool, &warcinfo, gzip)?;
+        let (offset, _) = write_record(&mut spool, &warcinfo, gzip)?;
 
-        for url in urls {
-            let url = url.as_ref();
+        let mut collection = Collection {
+            spool,
+            offset,
+            warcinfo_id,
+            warc_name,
+            gzip,
+            summary: ArchiveSummary::default(),
+            items: Vec::new(),
+            page_list: Vec::new(),
+        };
 
-            // Capture failures are network-level problems with one URL; they are recorded in the
-            // summary, while errors writing the archive itself abort the run below.
-            match self.capture(url) {
-                Ok(exchanges) => {
-                    let redirects = exchanges.len() - 1;
-                    let mut last = None;
+        let concurrency = self.config.concurrency.max(1);
 
-                    for exchange in exchanges {
-                        last = Some((exchange.date, exchange.status, exchange.payload_length));
+        if concurrency == 1 {
+            for url in urls {
+                let url = url.as_ref();
+                let (exchanges, error) = self.capture(url);
 
-                        let (item, written) = write_exchange(
-                            &mut spool,
-                            exchange,
-                            &warcinfo_id,
-                            offset,
-                            warc_name,
-                            gzip,
-                        )?;
-                        items.push(item);
-                        offset += written;
-                    }
-
-                    let (date, status, size) = last.expect("capture returns at least one exchange");
-
-                    page_list.push(Page {
-                        url: Cow::Owned(url.to_owned()),
-                        ts: date,
-                        id: None,
-                        title: None,
-                        text: None,
-                        size: Some(size),
-                        extra: serde_json::Map::new(),
-                    });
-
-                    summary.captures.push(CaptureSummary {
-                        url: url.to_owned(),
-                        date,
-                        status,
-                        size,
-                        redirects,
-                    });
-                }
-                Err(error) => summary.failures.push(Failure {
-                    url: url.to_owned(),
-                    error,
-                }),
+                collection.record(url.to_owned(), exchanges, error)?;
             }
+        } else {
+            self.capture_concurrently(urls, concurrency, &mut collection)?;
         }
+
+        let Collection {
+            spool,
+            summary,
+            items,
+            page_list,
+            ..
+        } = collection;
 
         let mut file = spool
             .into_inner()
@@ -267,41 +356,151 @@ impl Archiver {
         Ok(summary)
     }
 
+    /// Capture URLs with a pool of worker threads, recording the outcomes in input order.
+    ///
+    /// At most `concurrency` downloads are in flight at a time, and completed captures are
+    /// buffered only until their turn comes to be written, so memory use is proportional to
+    /// the concurrency rather than to the number of URLs.
+    fn capture_concurrently<I: IntoIterator<Item = S>, S: AsRef<str>>(
+        &self,
+        urls: I,
+        concurrency: usize,
+        collection: &mut Collection,
+    ) -> Result<(), Error> {
+        let mut urls = urls.into_iter();
+
+        // The channels live outside the thread scope so that the workers may borrow them; the
+        // task sender is moved into the scope body and dropped there, closing the task channel
+        // so that idle workers exit before the scope joins them.
+        let (task_sender, task_receiver) = mpsc::channel::<(usize, String)>();
+        let task_receiver = Mutex::new(task_receiver);
+        let (outcome_sender, outcome_receiver) = mpsc::sync_channel::<CaptureOutcome>(concurrency);
+
+        thread::scope(|scope| {
+            for _ in 0..concurrency {
+                let task_receiver = &task_receiver;
+                let outcome_sender = outcome_sender.clone();
+
+                scope.spawn(move || {
+                    loop {
+                        // The lock is held only to take the next task, never while downloading.
+                        let task = task_receiver
+                            .lock()
+                            .ok()
+                            .and_then(|receiver| receiver.recv().ok());
+
+                        let Some((index, url)) = task else { return };
+                        let (exchanges, error) = self.capture(&url);
+
+                        // The writer hanging up means the run ended early; stop working.
+                        if outcome_sender.send((index, url, exchanges, error)).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+
+            drop(outcome_sender);
+
+            let mut dispatched = 0;
+
+            for (index, url) in urls.by_ref().take(concurrency).enumerate() {
+                let _ = task_sender.send((index, url.as_ref().to_owned()));
+                dispatched += 1;
+            }
+
+            let mut result = Ok(());
+            let mut completed = 0;
+            let mut next_to_record = 0;
+            let mut pending = BTreeMap::new();
+
+            // Every dispatched task is drained even after a write error, so that no worker is
+            // left blocked on the outcome channel when the scope joins the pool.
+            while completed < dispatched {
+                let (index, url, exchanges, error) = outcome_receiver
+                    .recv()
+                    .expect("workers always report an outcome before exiting");
+                completed += 1;
+
+                if result.is_ok() {
+                    // Refill the pool so that `concurrency` downloads stay in flight.
+                    if let Some(url) = urls.next() {
+                        let _ = task_sender.send((dispatched, url.as_ref().to_owned()));
+                        dispatched += 1;
+                    }
+
+                    // Outcomes are recorded strictly in input order, so completions that
+                    // arrive early wait in the reorder buffer for their turn.
+                    pending.insert(index, (url, exchanges, error));
+
+                    while let Some((url, exchanges, error)) = pending.remove(&next_to_record) {
+                        if let Err(error) = collection.record(url, exchanges, error) {
+                            result = Err(error);
+                            break;
+                        }
+
+                        next_to_record += 1;
+                    }
+                }
+            }
+
+            drop(task_sender);
+
+            result
+        })
+    }
+
     /// Fetch a URL and every hop of its redirect chain, in order.
     ///
-    /// The returned list is never empty. A response which still redirects after the configured
-    /// limit (or whose target is unusable) is recorded as the final hop rather than followed.
-    fn capture(&self, url: &str) -> Result<Vec<Exchange>, Error> {
+    /// The returned list holds every hop captured. When the error is set, the request for the
+    /// next hop (or, if the list is empty, the first request) failed; otherwise the list ends
+    /// with the final response, and a response which still redirects after the configured
+    /// limit (or whose target is unusable) is recorded as final rather than followed.
+    fn capture(&self, url: &str) -> (Vec<Exchange>, Option<Error>) {
         let mut exchanges = Vec::new();
-        let mut current = Url::parse(url)?;
+
+        let mut current = match Url::parse(url) {
+            Ok(url) => url,
+            Err(error) => return (exchanges, Some(error.into())),
+        };
 
         loop {
-            let exchange = self.fetch(&current)?;
-            let location = exchange.location.clone();
-            exchanges.push(exchange);
+            match self.fetch(&current) {
+                Ok((exchange, location)) => {
+                    exchanges.push(exchange);
 
-            match location {
-                Some(next) if exchanges.len() <= self.config.max_redirects => current = next,
-                _ => return Ok(exchanges),
+                    match location {
+                        Some(next) if exchanges.len() <= self.config.max_redirects => {
+                            current = next;
+                        }
+                        _ => return (exchanges, None),
+                    }
+                }
+                Err(error) => return (exchanges, Some(error)),
             }
         }
     }
 
-    /// Perform one `GET` request and render the exchange for recording.
-    fn fetch(&self, url: &Url) -> Result<Exchange, Error> {
+    /// Perform one `GET` request, rendering the exchange for recording and returning its
+    /// redirect target, if any.
+    fn fetch(&self, url: &Url) -> Result<(Exchange, Option<Url>), Error> {
+        // A URL with credentials cannot be archived faithfully: the HTTP layer would turn them
+        // into an `Authorization` header, so recording the exchange would either leak the
+        // secret into the archive or misrepresent what was sent.
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(Error::CredentialedUrl(redact_credentials(url)));
+        }
+
         let host = url
             .host_str()
             .ok_or_else(|| Error::MissingHost(url.to_string()))?;
         let key = cdxj::search_key(url.as_str())?;
         let request = http::render_request(url, host, &self.config.user_agent);
 
+        // WARC-Date is the instant at which data capture began, so it is taken before the
+        // request is sent.
         let date = Utc::now();
-        let response = self
-            .client
-            .get(url.clone())
-            .header(USER_AGENT, &self.config.user_agent)
-            .header(ACCEPT, "*/*")
-            .send()?;
+        let response = self.client.get(url.clone()).send()?;
 
         let status = response.status();
         let version = response.version();
@@ -323,60 +522,123 @@ impl Archiver {
 
         let body = response.bytes()?;
 
-        Ok(Exchange {
-            url: url.clone(),
-            key,
-            date,
-            status: status.as_u16(),
-            mime,
-            ip,
-            request,
-            response: http::render_response(version, status, &headers, &body),
-            payload_digest: Sha256Digest::compute(&body),
-            payload_length: body.len() as u64,
+        Ok((
+            Exchange {
+                url: url.clone(),
+                key,
+                date,
+                status: status.as_u16(),
+                mime,
+                ip,
+                request,
+                response: http::render_response(version, status, &headers, &body),
+                payload_digest: Sha256Digest::compute(&body),
+                payload_length: body.len() as u64,
+            },
             location,
-        })
+        ))
     }
 }
 
 /// The redirect target of a response, when present and followable over HTTP.
 fn next_location(current: &Url, status: StatusCode, headers: &HeaderMap) -> Option<Url> {
-    if !status.is_redirection() {
+    // Only the redirect statuses that denote a fetchable alternate location are followed:
+    // `300 Multiple Choices` and `304 Not Modified` are redirection-class but are final
+    // responses in their own right.
+    if !matches!(
+        status,
+        StatusCode::MOVED_PERMANENTLY
+            | StatusCode::FOUND
+            | StatusCode::SEE_OTHER
+            | StatusCode::TEMPORARY_REDIRECT
+            | StatusCode::PERMANENT_REDIRECT
+    ) {
         return None;
     }
 
     let location = headers.get(LOCATION)?.to_str().ok()?;
     let next = current.join(location).ok()?;
 
-    matches!(next.scheme(), "http" | "https").then_some(next)
+    // A target with credentials could not be archived faithfully (see `Error::CredentialedUrl`),
+    // so it is treated as unusable and the redirecting response is recorded as the final hop.
+    (matches!(next.scheme(), "http" | "https")
+        && next.username().is_empty()
+        && next.password().is_none())
+    .then_some(next)
+}
+
+/// The URL rendered with its credentials removed, safe for error messages and logs.
+fn redact_credentials(url: &Url) -> String {
+    let mut redacted = url.clone();
+
+    // Removing credentials only fails for URLs that cannot carry them, which cannot get here.
+    let _ = redacted.set_username("");
+    let _ = redacted.set_password(None);
+
+    redacted.to_string()
+}
+
+/// A writer adapter that counts and hashes the bytes written through it.
+struct DigestWriter<W> {
+    inner: W,
+    hasher: sha2::Sha256,
+    written: u64,
+}
+
+impl<W: Write> DigestWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            hasher: sha2::Sha256::new(),
+            written: 0,
+        }
+    }
+
+    fn finish(self) -> (u64, Sha256Digest) {
+        (self.written, Sha256Digest(self.hasher.finalize().into()))
+    }
+}
+
+impl<W: Write> Write for DigestWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+
+        self.hasher.update(&buf[..written]);
+        self.written += written as u64;
+
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Write one record to the spooled WARC member, returning the number of bytes written and
 /// their SHA-256 digest.
 ///
-/// When `gzip` is set, the record is compressed as an independent gzip member, following the
-/// WARC convention, so that the returned length (and therefore the index offsets derived from
-/// it) frames a complete member that can be decompressed on its own. The digest is of the
-/// stored bytes — the compressed member when compressing — so that it covers exactly the
-/// framed range.
+/// The record is hashed and counted as it streams through to the spool, so it is never
+/// serialized into memory. When `gzip` is set, the record is compressed as an independent gzip
+/// member, following the WARC convention, so that the returned length (and therefore the index
+/// offsets derived from it) frames a complete member that can be decompressed on its own. The
+/// digest is of the stored bytes — the compressed member when compressing — so that it covers
+/// exactly the framed range.
 fn write_record<W: Write>(
     writer: &mut W,
     record: &Record<BufferedBody>,
     gzip: bool,
 ) -> Result<(u64, Sha256Digest), Error> {
-    let stored = if gzip {
-        let mut encoder = gzip::Encoder::new(Vec::new())?;
+    let mut digest_writer = DigestWriter::new(writer);
+
+    if gzip {
+        let mut encoder = gzip::Encoder::new(&mut digest_writer)?;
         WarcWriter::new(&mut encoder).write(record)?;
-        encoder.finish().into_result()?
+        encoder.finish().into_result()?;
     } else {
-        let mut bytes = Vec::new();
-        WarcWriter::new(&mut bytes).write(record)?;
-        bytes
-    };
+        WarcWriter::new(&mut digest_writer).write(record)?;
+    }
 
-    writer.write_all(&stored)?;
-
-    Ok((stored.len() as u64, Sha256Digest::compute(&stored)))
+    Ok(digest_writer.finish())
 }
 
 /// Build and write the response and request records for an exchange, returning the CDXJ index
