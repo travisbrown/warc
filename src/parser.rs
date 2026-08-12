@@ -22,7 +22,7 @@ fn version(input: &[u8]) -> IResult<&[u8], &str> {
     Ok((input, version_str))
 }
 
-fn is_header_token_char(chr: u8) -> bool {
+const fn is_header_token_char(chr: u8) -> bool {
     !matches!(chr, 0..=31
         | 128..=255
         | b'('

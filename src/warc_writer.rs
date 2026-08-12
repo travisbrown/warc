@@ -15,21 +15,21 @@ pub struct WarcWriter<W> {
 
 impl<W: Write> WarcWriter<W> {
     /// Create a new writer.
-    pub fn new(w: W) -> Self {
-        WarcWriter { writer: w }
+    pub const fn new(w: W) -> Self {
+        Self { writer: w }
     }
 
     /// Write a single record.
     ///
     /// The number of bytes written is returned upon success.
     pub fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
-        self.write_raw(record.to_raw_header(), &record.body())
+        self.write_raw(&record.to_raw_header(), &record.body())
     }
 
     /// Write a single raw record.
     ///
     /// The number of bytes written is returned upon success.
-    pub fn write_raw<B>(&mut self, headers: RawRecordHeader, body: &B) -> io::Result<usize>
+    pub fn write_raw<B>(&mut self, headers: &RawRecordHeader, body: &B) -> io::Result<usize>
     where
         B: AsRef<[u8]>,
     {
@@ -45,7 +45,7 @@ impl<W: Write> WarcWriter<W> {
         emit(headers.version.as_bytes())?;
         emit(b"\r\n")?;
 
-        for (token, value) in headers.as_ref().iter() {
+        for (token, value) in headers.as_ref() {
             emit(token.to_string().as_bytes())?;
             emit(b": ")?;
             emit(value)?;
@@ -97,7 +97,7 @@ impl WarcWriter<BufWriter<fs::File>> {
         let file = fs::File::create(&path)?;
         let writer = BufWriter::with_capacity(MB, file);
 
-        Ok(WarcWriter::new(writer))
+        Ok(Self::new(writer))
     }
 }
 
@@ -132,19 +132,19 @@ mod from_path_tests {
 
         let mut writer = WarcWriter::from_path(&path).unwrap();
         writer
-            .write_raw(record_with_body(long_body), &long_body)
+            .write_raw(&record_with_body(long_body), &long_body)
             .unwrap();
         writer.into_inner().unwrap();
 
         let mut writer = WarcWriter::from_path(&path).unwrap();
         writer
-            .write_raw(record_with_body(short_body), &short_body)
+            .write_raw(&record_with_body(short_body), &short_body)
             .unwrap();
         writer.into_inner().unwrap();
 
         let mut expected_writer = WarcWriter::new(Vec::new());
         expected_writer
-            .write_raw(record_with_body(short_body), &short_body)
+            .write_raw(&record_with_body(short_body), &short_body)
             .unwrap();
 
         assert_eq!(std::fs::read(&path).unwrap(), expected_writer.writer);
@@ -182,7 +182,7 @@ mod write_raw_tests {
 
         let (headers, body) = record.into_raw_parts();
         let mut raw_writer = WarcWriter::new(Vec::new());
-        let raw_len = raw_writer.write_raw(headers, &body).unwrap();
+        let raw_len = raw_writer.write_raw(&headers, &body).unwrap();
 
         assert_eq!(record_writer.writer, raw_writer.writer);
         assert_eq!(record_len, raw_len);
@@ -273,7 +273,7 @@ mod write_raw_tests {
         };
 
         let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
-        let bytes_written = writer.write_raw(headers, b"12345").unwrap();
+        let bytes_written = writer.write_raw(&headers, b"12345").unwrap();
 
         let expected: &[u8] = b"WARC/1.0\r\nwarc-type: dunno\r\n\r\n12345\r\n\r\n";
         assert_eq!(writer.writer.0.as_slice(), expected);
@@ -296,6 +296,6 @@ impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
         let gzip_stream = GzipWriter::new(file)?;
         let writer = BufWriter::with_capacity(MB, gzip_stream);
 
-        Ok(WarcWriter::new(writer))
+        Ok(Self::new(writer))
     }
 }
