@@ -159,6 +159,44 @@ fn round_trip_with_gzip_warc_member() -> Result<(), Box<dyn std::error::Error>> 
     assert_round_trip("data.warc.gz", &compressed)
 }
 
+/// The specification requires the `STORE` method for all `archive/` members and permits
+/// `DEFLATE` only for plain-text members.
+#[test]
+fn spec_compression_methods() -> Result<(), Box<dyn std::error::Error>> {
+    use zip::CompressionMethod;
+
+    let expectations = [
+        ("indexes/index.cdx", CompressionMethod::Deflated),
+        ("pages/pages.jsonl", CompressionMethod::Deflated),
+        ("datapackage.json", CompressionMethod::Deflated),
+        ("datapackage-digest.json", CompressionMethod::Deflated),
+    ];
+
+    // A plain WARC member must be stored, not just a gzip one.
+    let wacz = build_wacz("data.warc", &warc_bytes()?)?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(wacz))?;
+    assert_eq!(
+        archive.by_name("archive/data.warc")?.compression(),
+        CompressionMethod::Stored
+    );
+    for (name, expected) in expectations {
+        assert_eq!(archive.by_name(name)?.compression(), expected, "{name}");
+    }
+
+    let mut encoder = gzip::Encoder::new(Vec::new())?;
+    encoder.write_all(&warc_bytes()?)?;
+    let compressed = encoder.finish().into_result()?;
+
+    let wacz = build_wacz("data.warc.gz", &compressed)?;
+    let mut archive = zip::ZipArchive::new(Cursor::new(wacz))?;
+    assert_eq!(
+        archive.by_name("archive/data.warc.gz")?.compression(),
+        CompressionMethod::Stored
+    );
+
+    Ok(())
+}
+
 #[test]
 fn create_refuses_an_existing_output() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
