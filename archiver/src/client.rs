@@ -440,7 +440,7 @@ fn write_exchange<W: Write>(
 
 /// The `warcinfo` record leading the WARC member.
 fn warcinfo_record(warc_name: &str) -> Result<Record<BufferedBody>, Error> {
-    let body = format!("software: {DEFAULT_USER_AGENT}\r\nformat: WARC file version 1.0\r\n");
+    let body = format!("software: {DEFAULT_USER_AGENT}\r\nformat: WARC file version 1.1\r\n");
 
     Ok(RecordBuilder::default()
         .warc_type(RecordType::WarcInfo)
