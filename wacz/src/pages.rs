@@ -8,7 +8,8 @@
 use std::borrow::Cow;
 use std::io::{BufRead, Write};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
+use sha2::Digest as _;
 
 use crate::attributes;
 
@@ -222,6 +223,23 @@ impl<R: BufRead> Iterator for PageListReader<R> {
     }
 }
 
+/// The synthetic identifier for a page: a truncated SHA-256 hash of its timestamp and URL.
+///
+/// The hash input is the concatenation of the timestamp in RFC 3339 format (UTC, `Z` suffix,
+/// exactly as it is serialized in the page entry) and the URL; the identifier is the first
+/// `length` characters of the lowercase hexadecimal digest. Lengths above 64 yield the full
+/// digest.
+#[must_use]
+pub fn synthetic_id(ts: &DateTime<Utc>, url: &str, length: usize) -> String {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(ts.to_rfc3339_opts(SecondsFormat::AutoSi, true));
+    hasher.update(url);
+
+    let mut id = data_encoding::HEXLOWER.encode(&hasher.finalize());
+    id.truncate(length);
+    id
+}
+
 /// Write a page list: a header line followed by one JSON line per page.
 ///
 /// # Errors
@@ -304,6 +322,22 @@ mod tests {
         ));
 
         Ok(())
+    }
+
+    #[test]
+    fn synthetic_id_matches_known_value() {
+        // Externally computed: sha256("2020-10-07T21:22:36Zhttps://www.example.com/page").
+        const DIGEST: &str = "f5ca709e5e9363c834323853295995cc0df353276b4811df37034f2bab360bbd";
+
+        let ts = DateTime::parse_from_rfc3339("2020-10-07T21:22:36Z")
+            .expect("valid timestamp")
+            .to_utc();
+        let url = "https://www.example.com/page";
+
+        assert_eq!(synthetic_id(&ts, url, 10), DIGEST[..10]);
+        assert_eq!(synthetic_id(&ts, url, 64), DIGEST);
+        // Lengths above the digest length yield the full digest.
+        assert_eq!(synthetic_id(&ts, url, 100), DIGEST);
     }
 
     #[test]

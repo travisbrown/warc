@@ -5,6 +5,7 @@ use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use libflate::gzip;
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, LOCATION, USER_AGENT};
@@ -19,8 +20,10 @@ use warc_wacz::writer::{PackageMetadata, WaczWriter};
 use crate::config::{Config, DEFAULT_USER_AGENT};
 use crate::http;
 
-/// The file name of the WARC member written into the WACZ file.
+/// The file name of the WARC member written into the WACZ file when it is not compressed.
 const WARC_NAME: &str = "data.warc";
+/// The file name of the WARC member written into the WACZ file when it is gzip-compressed.
+const GZIP_WARC_NAME: &str = "data.warc.gz";
 /// The file name of the CDXJ index member.
 const INDEX_NAME: &str = "index.cdx";
 /// The WARC `Content-Type` of response records.
@@ -165,17 +168,20 @@ impl Archiver {
         urls: I,
         mut wacz: WaczWriter<W>,
     ) -> Result<ArchiveSummary, Error> {
+        let gzip = self.config.gzip_warc;
+        let warc_name = if gzip { GZIP_WARC_NAME } else { WARC_NAME };
+
         let mut summary = ArchiveSummary::default();
         let mut items = Vec::new();
         let mut page_list = Vec::new();
 
         // The WARC member is spooled to an unlinked temporary file so that response bodies never
         // need to be held in memory all at once.
-        let mut warc_writer = WarcWriter::new(BufWriter::new(tempfile::tempfile()?));
+        let mut spool = BufWriter::new(tempfile::tempfile()?);
 
-        let warcinfo = warcinfo_record()?;
+        let warcinfo = warcinfo_record(warc_name)?;
         let warcinfo_id = warcinfo.warc_id().to_owned();
-        let mut offset = warc_writer.write(&warcinfo)? as u64;
+        let mut offset = write_record(&mut spool, &warcinfo, gzip)?;
 
         for url in urls {
             let url = url.as_ref();
@@ -190,8 +196,14 @@ impl Archiver {
                     for exchange in exchanges {
                         last = Some((exchange.date, exchange.status, exchange.payload_length));
 
-                        let (item, written) =
-                            write_exchange(&mut warc_writer, exchange, &warcinfo_id, offset)?;
+                        let (item, written) = write_exchange(
+                            &mut spool,
+                            exchange,
+                            &warcinfo_id,
+                            offset,
+                            warc_name,
+                            gzip,
+                        )?;
                         items.push(item);
                         offset += written;
                     }
@@ -223,12 +235,12 @@ impl Archiver {
             }
         }
 
-        let mut file = warc_writer
+        let mut file = spool
             .into_inner()
             .map_err(std::io::IntoInnerError::into_error)?;
         file.rewind()?;
 
-        wacz.add_warc(WARC_NAME, file)?;
+        wacz.add_warc(warc_name, file)?;
         wacz.add_index(INDEX_NAME, &items)?;
         wacz.add_pages(&PageListHeader::default(), &page_list)?;
 
@@ -328,13 +340,37 @@ fn next_location(current: &Url, status: StatusCode, headers: &HeaderMap) -> Opti
     matches!(next.scheme(), "http" | "https").then_some(next)
 }
 
+/// Write one record to the spooled WARC member, returning the number of bytes written.
+///
+/// When `gzip` is set, the record is compressed as an independent gzip member, following the
+/// WARC convention, so that the returned length (and therefore the index offsets derived from
+/// it) frames a complete member that can be decompressed on its own.
+fn write_record<W: Write>(
+    writer: &mut W,
+    record: &Record<BufferedBody>,
+    gzip: bool,
+) -> Result<u64, Error> {
+    if gzip {
+        let mut encoder = gzip::Encoder::new(Vec::new())?;
+        WarcWriter::new(&mut encoder).write(record)?;
+        let compressed = encoder.finish().into_result()?;
+        writer.write_all(&compressed)?;
+
+        Ok(compressed.len() as u64)
+    } else {
+        Ok(WarcWriter::new(writer).write(record)? as u64)
+    }
+}
+
 /// Build and write the response and request records for an exchange, returning the CDXJ index
 /// entry for the response and the total bytes written.
 fn write_exchange<W: Write>(
-    writer: &mut WarcWriter<W>,
+    writer: &mut W,
     exchange: Exchange,
     warcinfo_id: &str,
     offset: u64,
+    warc_name: &'static str,
+    gzip: bool,
 ) -> Result<(cdxj::Item<'static>, u64), Error> {
     let mut response_builder = RecordBuilder::default()
         .warc_type(RecordType::Response)
@@ -363,8 +399,8 @@ fn write_exchange<W: Write>(
         .body(exchange.request)
         .build()?;
 
-    let response_length = writer.write(&response)? as u64;
-    let request_length = writer.write(&request)? as u64;
+    let response_length = write_record(writer, &response, gzip)?;
+    let request_length = write_record(writer, &request, gzip)?;
 
     let item = cdxj::Item {
         key: Cow::Owned(exchange.key),
@@ -376,7 +412,7 @@ fn write_exchange<W: Write>(
             status: Some(exchange.status),
             offset: Some(offset),
             length: Some(response_length),
-            filename: Some(Cow::Borrowed(WARC_NAME)),
+            filename: Some(Cow::Borrowed(warc_name)),
             extra: serde_json::Map::new(),
         },
     };
@@ -385,13 +421,13 @@ fn write_exchange<W: Write>(
 }
 
 /// The `warcinfo` record leading the WARC member.
-fn warcinfo_record() -> Result<Record<BufferedBody>, Error> {
+fn warcinfo_record(warc_name: &str) -> Result<Record<BufferedBody>, Error> {
     let body = format!("software: {DEFAULT_USER_AGENT}\r\nformat: WARC file version 1.0\r\n");
 
     Ok(RecordBuilder::default()
         .warc_type(RecordType::WarcInfo)
         .header(WarcHeader::ContentType, "application/warc-fields")
-        .header(WarcHeader::Filename, WARC_NAME)
+        .header(WarcHeader::Filename, warc_name)
         .body(body.into_bytes())
         .build()?)
 }

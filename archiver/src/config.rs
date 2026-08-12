@@ -18,16 +18,23 @@ pub struct Config {
     /// Every hop is captured; when a response still redirects after this many follows, it is
     /// recorded as the final response for its URL rather than treated as an error.
     pub max_redirects: usize,
+    /// Whether to gzip the WARC member (as `data.warc.gz`).
+    ///
+    /// Each record is compressed as an independent gzip member, following the WARC convention,
+    /// so that the index offsets frame complete members that replay tools can decompress
+    /// without reading the rest of the file.
+    pub gzip_warc: bool,
 }
 
 impl Default for Config {
-    /// The default configuration: this crate's `User-Agent`, a 30-second timeout, and at most
-    /// ten redirects per URL.
+    /// The default configuration: this crate's `User-Agent`, a 30-second timeout, at most ten
+    /// redirects per URL, and a gzip-compressed WARC member.
     fn default() -> Self {
         Self {
             user_agent: DEFAULT_USER_AGENT.to_owned(),
             timeout: Duration::from_secs(30),
             max_redirects: 10,
+            gzip_warc: true,
         }
     }
 }
