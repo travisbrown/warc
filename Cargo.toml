@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "wacz"]
+members = ["archiver", "archiver-cli", "core", "wacz"]
 resolver = "3"
 
 [workspace.package]
@@ -15,10 +15,15 @@ version = "0.4.0"
 
 [workspace.dependencies]
 chrono = "0.4"
+cli-helpers = "0.1"
 data-encoding = "2"
 indexmap = "2"
+indicatif = "0.18"
 libflate = "2"
 nom = "8"
+# HTTP/1.1 only, so that recorded requests and responses match the wire format; response bodies
+# are archived as received, so no decompression features are enabled.
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
