@@ -6,6 +6,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use libflate::gzip;
 use sha2::Digest as _;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -25,19 +26,54 @@ const SOFTWARE: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERS
 /// The default number of characters in synthetic page identifiers.
 const DEFAULT_PAGE_ID_LENGTH: usize = 24;
 
+/// The default number of CDX lines per gzip block in a ZipNum index, matching py-wacz.
+const DEFAULT_ZIPNUM_LINES: usize = 1024;
+
+/// The format identifier written in the `!meta` header line of a ZipNum summary member.
+const ZIPNUM_FORMAT: &str = "cdxj-gzip-1.0";
+
+/// The format of the CDXJ index written by [`WaczWriter::add_index`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndexFormat {
+    /// A plain-text CDXJ member.
+    Plain,
+    /// A "ZipNum" compressed index, as written by py-wacz: the sorted CDX lines are grouped
+    /// into blocks, each block is compressed as an independent gzip member into a `.cdx.gz`
+    /// data member, and a plain-text `.idx` summary member locates each block by offset,
+    /// length, and digest, allowing binary search over the compressed index.
+    ZipNum {
+        /// The number of CDX lines per gzip block.
+        lines: usize,
+    },
+}
+
+impl IndexFormat {
+    /// The ZipNum format with the standard block size of 1024 lines, matching py-wacz.
+    #[must_use]
+    pub const fn zipnum() -> Self {
+        Self::ZipNum {
+            lines: DEFAULT_ZIPNUM_LINES,
+        }
+    }
+}
+
 /// Configuration for WACZ creation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriterConfig {
     /// The number of characters in the synthetic identifiers given to pages written without one
     /// (see [`pages::synthetic_id`]).
     pub page_id_length: usize,
+    /// The format of the CDXJ index written by [`WaczWriter::add_index`].
+    pub index_format: IndexFormat,
 }
 
 impl Default for WriterConfig {
-    /// The default configuration: 24-character synthetic page identifiers.
+    /// The default configuration: 24-character synthetic page identifiers and a plain-text
+    /// index.
     fn default() -> Self {
         Self {
             page_id_length: DEFAULT_PAGE_ID_LENGTH,
+            index_format: IndexFormat::Plain,
         }
     }
 }
@@ -95,7 +131,19 @@ pub struct WaczWriter<W: Write + Seek> {
 impl WaczWriter<BufWriter<File>> {
     /// Create a WACZ file at the given path, refusing to overwrite an existing file.
     pub fn create<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        Ok(Self::new(BufWriter::new(File::create_new(path)?)))
+        Self::create_with_config(path, WriterConfig::default())
+    }
+
+    /// Create a WACZ file at the given path with the given configuration, refusing to
+    /// overwrite an existing file.
+    pub fn create_with_config<P: AsRef<Path>>(
+        path: P,
+        config: WriterConfig,
+    ) -> Result<Self, Error> {
+        Ok(Self::with_config(
+            BufWriter::new(File::create_new(path)?),
+            config,
+        ))
     }
 }
 
@@ -137,29 +185,103 @@ impl<W: Write + Seek> WaczWriter<W> {
         self.add_warc(name, BufReader::new(file))
     }
 
-    /// Write a plain-text CDXJ index member under `indexes/` with the given file name (which
-    /// should therefore not end in `.gz`; conventionally `index.cdx`).
+    /// Write the CDXJ index under `indexes/`, in the configured
+    /// [`index_format`](WriterConfig::index_format), sorted as required for binary search.
     ///
-    /// The items are sorted by key and timestamp as required for binary search.
+    /// `name` is the base file name and should not end in `.gz` (conventionally `index.cdx`).
+    /// With [`IndexFormat::Plain`], a single plain-text member is written with that name. With
+    /// [`IndexFormat::ZipNum`], a `{name}.gz` data member and an `.idx` summary member (named
+    /// by replacing a `.cdx` suffix, so conventionally `index.idx`) are written following the
+    /// py-wacz layout; the lines are additionally deduplicated, as py-wacz does.
     pub fn add_index<'a, I: IntoIterator<Item = &'a cdxj::Item<'a>>>(
         &mut self,
         name: &str,
         items: I,
     ) -> Result<(), Error> {
         let mut items = items.into_iter().collect::<Vec<_>>();
-        items.sort_unstable_by(|a, b| {
-            a.key
-                .cmp(&b.key)
-                .then_with(|| a.timestamp.cmp(&b.timestamp))
-        });
 
-        self.add_member(&format!("{INDEXES_PREFIX}{name}"), deflated(), |writer| {
-            for item in items {
-                writeln!(writer, "{item}")?;
+        match self.config.index_format {
+            IndexFormat::Plain => {
+                items.sort_unstable_by(|a, b| {
+                    a.key
+                        .cmp(&b.key)
+                        .then_with(|| a.timestamp.cmp(&b.timestamp))
+                });
+
+                self.add_member(&format!("{INDEXES_PREFIX}{name}"), deflated(), |writer| {
+                    for item in items {
+                        writeln!(writer, "{item}")?;
+                    }
+
+                    Ok(())
+                })
+            }
+            IndexFormat::ZipNum { lines } => {
+                // py-wacz sorts and deduplicates the rendered lines themselves.
+                let mut rendered = items
+                    .iter()
+                    .map(|item| format!("{item}\n"))
+                    .collect::<Vec<_>>();
+                rendered.sort_unstable();
+                rendered.dedup();
+
+                self.add_zipnum_index(name, &rendered, lines)
+            }
+        }
+    }
+
+    /// Write a ZipNum index pair: blocks of `lines` gzipped CDX lines in `{name}.gz`, located
+    /// by a plain-text summary member.
+    fn add_zipnum_index(
+        &mut self,
+        name: &str,
+        rendered: &[String],
+        lines: usize,
+    ) -> Result<(), Error> {
+        let data_name = format!("{name}{GZIP_EXTENSION}");
+        let idx_name = format!("{}.idx", name.strip_suffix(".cdx").unwrap_or(name));
+        let data_path = format!("{INDEXES_PREFIX}{data_name}");
+
+        let mut summary = String::new();
+        self.add_member(&data_path, options_for(&data_path), |writer| {
+            let mut offset: u64 = 0;
+
+            for block in rendered.chunks(lines.max(1)) {
+                if offset == 0 {
+                    summary.push_str(&format!(
+                        "!meta 0 {{\"format\": \"{ZIPNUM_FORMAT}\", \"filename\": \"{data_name}\"}}\n"
+                    ));
+                }
+
+                let mut encoder = gzip::Encoder::new(Vec::new())?;
+                for line in block {
+                    encoder.write_all(line.as_bytes())?;
+                }
+                let compressed = encoder.finish().into_result()?;
+
+                let length = compressed.len();
+                let digest = Sha256Digest::compute(&compressed);
+                let prefix = block[0].split('{').next().unwrap_or("").trim();
+                summary.push_str(&format!(
+                    "{prefix} {{\"offset\": {offset}, \"length\": {length}, \"digest\": \"{digest}\"}}\n"
+                ));
+
+                writer.write_all(&compressed)?;
+                offset += length as u64;
             }
 
             Ok(())
-        })
+        })?;
+
+        self.add_member(
+            &format!("{INDEXES_PREFIX}{idx_name}"),
+            deflated(),
+            |writer| {
+                writer.write_all(summary.as_bytes())?;
+
+                Ok(())
+            },
+        )
     }
 
     /// Write the required page list at `pages/pages.jsonl`.

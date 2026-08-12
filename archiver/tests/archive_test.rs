@@ -7,7 +7,7 @@ use std::thread;
 use libflate::gzip;
 use warc::{RecordType, WarcHeader};
 use warc_archiver::client::Archiver;
-use warc_archiver::config::Config;
+use warc_archiver::config::{Config, IndexFormat};
 use warc_wacz::cdxj;
 use warc_wacz::reader::WaczReader;
 
@@ -247,6 +247,50 @@ fn archive_with_plain_warc_member() -> Result<(), Box<dyn std::error::Error>> {
 
     assert_eq!(framed.len(), 1);
     assert_eq!(framed[0].warc_type(), &RecordType::Response);
+
+    Ok(())
+}
+
+#[test]
+fn archive_with_compressed_index() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, server) = serve(1)?;
+    let url = format!("http://127.0.0.1:{port}/");
+
+    let archiver = Archiver::new(Config {
+        index_format: IndexFormat::zipnum(),
+        ..Config::default()
+    })?;
+    let mut bytes = Vec::new();
+    let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
+    server.join().expect("server thread should not panic");
+
+    assert!(summary.is_complete());
+
+    let mut reader = WaczReader::new(Cursor::new(&bytes))?;
+
+    assert!(reader.verify()?.is_success());
+
+    // The compressed data member holds the full index; the summary locates its single block.
+    let items = reader
+        .index("indexes/index.cdx.gz")?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].fields.url.as_ref(), url);
+
+    let mut summary_member = String::new();
+    zip::ZipArchive::new(Cursor::new(&bytes))?
+        .by_name("indexes/index.idx")?
+        .read_to_string(&mut summary_member)?;
+
+    let lines = summary_member.lines().collect::<Vec<_>>();
+
+    assert_eq!(
+        lines[0],
+        "!meta 0 {\"format\": \"cdxj-gzip-1.0\", \"filename\": \"index.cdx.gz\"}"
+    );
+    assert_eq!(lines.len(), 2);
+    assert!(lines[1].starts_with(&format!("{} ", items[0].key)));
 
     Ok(())
 }
