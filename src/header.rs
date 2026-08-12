@@ -44,30 +44,30 @@ impl From<WarcHeader> for String {
 impl Display for WarcHeader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let stringified = match self {
-            WarcHeader::ContentLength => "content-length",
-            WarcHeader::ContentType => "content-type",
-            WarcHeader::BlockDigest => "warc-block-digest",
-            WarcHeader::ConcurrentTo => "warc-concurrent-to",
-            WarcHeader::Date => "warc-date",
-            WarcHeader::Filename => "warc-filename",
-            WarcHeader::IdentifiedPayloadType => "warc-identified-payload-type",
-            WarcHeader::IPAddress => "warc-ip-address",
-            WarcHeader::PayloadDigest => "warc-payload-digest",
-            WarcHeader::Profile => "warc-profile",
-            WarcHeader::RecordID => "warc-record-id",
-            WarcHeader::RefersTo => "warc-refers-to",
-            WarcHeader::RefersToDate => "warc-refers-to-date",
-            WarcHeader::RefersToTargetURI => "warc-refers-to-target-uri",
-            WarcHeader::SegmentNumber => "warc-segment-number",
-            WarcHeader::SegmentOriginID => "warc-segment-origin-id",
-            WarcHeader::SegmentTotalLength => "warc-segment-total-length",
-            WarcHeader::TargetURI => "warc-target-uri",
-            WarcHeader::Truncated => "warc-truncated",
-            WarcHeader::WarcType => "warc-type",
-            WarcHeader::WarcInfoID => "warc-warcinfo-id",
-            WarcHeader::Unknown(string) => string,
+            Self::ContentLength => "content-length",
+            Self::ContentType => "content-type",
+            Self::BlockDigest => "warc-block-digest",
+            Self::ConcurrentTo => "warc-concurrent-to",
+            Self::Date => "warc-date",
+            Self::Filename => "warc-filename",
+            Self::IdentifiedPayloadType => "warc-identified-payload-type",
+            Self::IPAddress => "warc-ip-address",
+            Self::PayloadDigest => "warc-payload-digest",
+            Self::Profile => "warc-profile",
+            Self::RecordID => "warc-record-id",
+            Self::RefersTo => "warc-refers-to",
+            Self::RefersToDate => "warc-refers-to-date",
+            Self::RefersToTargetURI => "warc-refers-to-target-uri",
+            Self::SegmentNumber => "warc-segment-number",
+            Self::SegmentOriginID => "warc-segment-origin-id",
+            Self::SegmentTotalLength => "warc-segment-total-length",
+            Self::TargetURI => "warc-target-uri",
+            Self::Truncated => "warc-truncated",
+            Self::WarcType => "warc-type",
+            Self::WarcInfoID => "warc-warcinfo-id",
+            Self::Unknown(string) => string,
         };
-        write!(f, "{}", stringified)
+        write!(f, "{stringified}")
     }
 }
 
@@ -104,8 +104,10 @@ impl<S: AsRef<str>> From<S> for WarcHeader {
         KNOWN_HEADERS
             .iter()
             .find(|(name, _)| string.eq_ignore_ascii_case(name))
-            .map(|(_, header)| header.clone())
-            .unwrap_or_else(|| WarcHeader::Unknown(string.to_lowercase()))
+            .map_or_else(
+                || Self::Unknown(string.to_lowercase()),
+                |(_, header)| header.clone(),
+            )
     }
 }
 
