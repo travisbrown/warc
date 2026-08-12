@@ -1,4 +1,7 @@
 #![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic, clippy::nursery, rust_2018_idioms)]
+#![allow(clippy::missing_errors_doc)]
+#![forbid(unsafe_code)]
 //! A WARC (Web ARChive) library
 
 const MB: usize = 1_048_576;
