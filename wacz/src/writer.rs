@@ -1,6 +1,8 @@
 //! Assembling a new WACZ file.
 
 use std::borrow::Cow;
+// The anonymous import makes `write!` work on `String` without shadowing `std::io::Write`.
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -26,10 +28,10 @@ const SOFTWARE: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERS
 /// The default number of characters in synthetic page identifiers.
 const DEFAULT_PAGE_ID_LENGTH: usize = 24;
 
-/// The default number of CDX lines per gzip block in a ZipNum index, matching py-wacz.
+/// The default number of CDX lines per gzip block in a `ZipNum` index, matching `py-wacz`.
 const DEFAULT_ZIPNUM_LINES: usize = 1024;
 
-/// The format identifier written in the `!meta` header line of a ZipNum summary member.
+/// The format identifier written in the `!meta` header line of a `ZipNum` summary member.
 const ZIPNUM_FORMAT: &str = "cdxj-gzip-1.0";
 
 /// The format of the CDXJ index written by [`WaczWriter::add_index`].
@@ -37,7 +39,7 @@ const ZIPNUM_FORMAT: &str = "cdxj-gzip-1.0";
 pub enum IndexFormat {
     /// A plain-text CDXJ member.
     Plain,
-    /// A "ZipNum" compressed index, as written by py-wacz: the sorted CDX lines are grouped
+    /// A `ZipNum` compressed index, as written by `py-wacz`: the sorted CDX lines are grouped
     /// into blocks, each block is compressed as an independent gzip member into a `.cdx.gz`
     /// data member, and a plain-text `.idx` summary member locates each block by offset,
     /// length, and digest, allowing binary search over the compressed index.
@@ -48,7 +50,7 @@ pub enum IndexFormat {
 }
 
 impl IndexFormat {
-    /// The ZipNum format with the standard block size of 1024 lines, matching py-wacz.
+    /// The `ZipNum` format with the standard block size of 1024 lines, matching `py-wacz`.
     #[must_use]
     pub const fn zipnum() -> Self {
         Self::ZipNum {
@@ -192,7 +194,7 @@ impl<W: Write + Seek> WaczWriter<W> {
     /// With [`IndexFormat::Plain`], a single plain-text member is written with that name. With
     /// [`IndexFormat::ZipNum`], a `{name}.gz` data member and an `.idx` summary member (named
     /// by replacing a `.cdx` suffix, so conventionally `index.idx`) are written following the
-    /// py-wacz layout; the lines are additionally deduplicated, as py-wacz does.
+    /// `py-wacz` layout; the lines are additionally deduplicated, as `py-wacz` does.
     pub fn add_index<'a, I: IntoIterator<Item = &'a cdxj::Item<'a>>>(
         &mut self,
         name: &str,
@@ -230,7 +232,7 @@ impl<W: Write + Seek> WaczWriter<W> {
         }
     }
 
-    /// Write a ZipNum index pair: blocks of `lines` gzipped CDX lines in `{name}.gz`, located
+    /// Write a `ZipNum` index pair: blocks of `lines` gzipped CDX lines in `{name}.gz`, located
     /// by a plain-text summary member.
     fn add_zipnum_index(
         &mut self,
@@ -248,9 +250,11 @@ impl<W: Write + Seek> WaczWriter<W> {
 
             for block in rendered.chunks(lines.max(1)) {
                 if offset == 0 {
-                    summary.push_str(&format!(
-                        "!meta 0 {{\"format\": \"{ZIPNUM_FORMAT}\", \"filename\": \"{data_name}\"}}\n"
-                    ));
+                    writeln!(
+                        summary,
+                        "!meta 0 {{\"format\": \"{ZIPNUM_FORMAT}\", \"filename\": \"{data_name}\"}}"
+                    )
+                    .expect("writing to a String cannot fail");
                 }
 
                 let mut encoder = gzip::Encoder::new(Vec::new())?;
@@ -262,9 +266,11 @@ impl<W: Write + Seek> WaczWriter<W> {
                 let length = compressed.len();
                 let digest = Sha256Digest::compute(&compressed);
                 let prefix = block[0].split('{').next().unwrap_or("").trim();
-                summary.push_str(&format!(
-                    "{prefix} {{\"offset\": {offset}, \"length\": {length}, \"digest\": \"{digest}\"}}\n"
-                ));
+                writeln!(
+                    summary,
+                    "{prefix} {{\"offset\": {offset}, \"length\": {length}, \"digest\": \"{digest}\"}}"
+                )
+                .expect("writing to a String cannot fail");
 
                 writer.write_all(&compressed)?;
                 offset += length as u64;

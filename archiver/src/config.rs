@@ -27,7 +27,7 @@ pub struct Config {
     /// without reading the rest of the file.
     pub gzip_warc: bool,
     /// The format of the CDXJ index members written into the WACZ file: a plain-text
-    /// `index.cdx`, or a ZipNum compressed `index.cdx.gz` and `index.idx` pair.
+    /// `index.cdx`, or a `ZipNum` compressed `index.cdx.gz` and `index.idx` pair.
     pub index_format: IndexFormat,
 }
 

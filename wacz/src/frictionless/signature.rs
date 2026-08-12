@@ -98,9 +98,10 @@ pub struct AnonymousSignature<'a> {
     pub public_key: Cow<'a, str>,
 }
 
-/// A domain-ownership identity signature: validated by a TLS certificate for
-/// [`domain`](Self::domain), with the signature itself countersigned by an RFC 3161 timestamp
-/// server to attest to the creation time.
+/// A domain-ownership identity signature.
+///
+/// The signature is validated by a TLS certificate for [`domain`](Self::domain), and is itself
+/// countersigned by an RFC 3161 timestamp server to attest to the creation time.
 #[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DomainIdentitySignature<'a> {

@@ -210,7 +210,7 @@ fn synthetic_page_ids() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A ZipNum index following the py-wacz layout: `index.cdx.gz` holds independent gzip members
+/// A `ZipNum` index following the `py-wacz` layout: `index.cdx.gz` holds independent gzip members
 /// of at most `lines` CDX lines each, and `index.idx` locates every block by offset, length,
 /// and digest behind a `!meta` header line.
 #[test]
