@@ -8,10 +8,9 @@
 use std::borrow::Cow;
 use std::io::{BufRead, Write};
 
+use bounded_static::{IntoBoundedStatic, ToBoundedStatic};
 use chrono::{DateTime, SecondsFormat, Utc};
 use sha2::Digest as _;
-
-use crate::attributes;
 
 /// The format identifier required in the header line of a page list.
 pub const FORMAT: &str = "json-pages-1.0";
@@ -62,14 +61,23 @@ pub struct PageListHeader<'a> {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-impl PageListHeader<'_> {
-    /// Convert into a header that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> PageListHeader<'static> {
+// Implemented by hand because the `extra` map's type has no `bounded_static` support.
+impl ToBoundedStatic for PageListHeader<'_> {
+    type Static = PageListHeader<'static>;
+
+    fn to_static(&self) -> Self::Static {
+        self.clone().into_static()
+    }
+}
+
+impl IntoBoundedStatic for PageListHeader<'_> {
+    type Static = PageListHeader<'static>;
+
+    fn into_static(self) -> Self::Static {
         PageListHeader {
-            format: attributes::into_owned(self.format),
-            id: attributes::into_owned(self.id),
-            title: attributes::into_owned(self.title),
+            format: self.format.into_static(),
+            id: self.id.into_static(),
+            title: self.title.into_static(),
             extra: self.extra,
         }
     }
@@ -124,16 +132,25 @@ pub struct Page<'a> {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-impl Page<'_> {
-    /// Convert into a page that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> Page<'static> {
+// Implemented by hand because the `extra` map's type has no `bounded_static` support.
+impl ToBoundedStatic for Page<'_> {
+    type Static = Page<'static>;
+
+    fn to_static(&self) -> Self::Static {
+        self.clone().into_static()
+    }
+}
+
+impl IntoBoundedStatic for Page<'_> {
+    type Static = Page<'static>;
+
+    fn into_static(self) -> Self::Static {
         Page {
-            url: attributes::into_owned(self.url),
+            url: self.url.into_static(),
             ts: self.ts,
-            id: attributes::into_owned_option(self.id),
-            title: attributes::into_owned_option(self.title),
-            text: attributes::into_owned_option(self.text),
+            id: self.id.into_static(),
+            title: self.title.into_static(),
+            text: self.text.into_static(),
             size: self.size,
             extra: self.extra,
         }
@@ -172,7 +189,7 @@ impl<R: BufRead> PageListReader<R> {
             return Err(Error::UnsupportedFormat(header.format.into_owned()));
         }
 
-        let header = header.into_owned();
+        let header = header.into_static();
         line.clear();
 
         Ok(Self {
@@ -213,7 +230,7 @@ impl<R: BufRead> Iterator for PageListReader<R> {
 
                     return Some(
                         serde_json::from_str::<Page<'_>>(content)
-                            .map(Page::into_owned)
+                            .map(IntoBoundedStatic::into_static)
                             .map_err(|error| Error::InvalidEntry { error, line_number }),
                     );
                 }

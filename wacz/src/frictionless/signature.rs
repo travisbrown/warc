@@ -4,7 +4,8 @@ use std::borrow::Cow;
 
 use chrono::{DateTime, Utc};
 
-use crate::attributes;
+use bounded_static::ToStatic;
+
 use crate::digest::Sha256Digest;
 
 /// The `signedData` signature envelope of a digest file, as defined by the
@@ -17,7 +18,7 @@ use crate::digest::Sha256Digest;
 /// The specification requires that the envelope contain no properties beyond those of its
 /// format; parsing is correspondingly strict, and an envelope with unlisted properties (or
 /// with fields from both formats) is rejected.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 pub enum SignatureData<'a> {
     /// A signature validated by a TLS certificate for a domain, countersigned by an RFC 3161
@@ -72,22 +73,11 @@ impl SignatureData<'_> {
             Self::Anonymous(signature) => &signature.signature,
         }
     }
-
-    /// Convert into a signature envelope that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> SignatureData<'static> {
-        match self {
-            Self::DomainIdentity(signature) => {
-                SignatureData::DomainIdentity(signature.into_owned())
-            }
-            Self::Anonymous(signature) => SignatureData::Anonymous(signature.into_owned()),
-        }
-    }
 }
 
 /// An anonymous signature: validated by a bare public key, with authorship established by
 /// distributing the key out-of-band.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AnonymousSignature<'a> {
     /// The SHA-256 digest of `datapackage.json` that was signed.
@@ -108,25 +98,10 @@ pub struct AnonymousSignature<'a> {
     pub public_key: Cow<'a, str>,
 }
 
-impl AnonymousSignature<'_> {
-    /// Convert into a signature that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> AnonymousSignature<'static> {
-        AnonymousSignature {
-            hash: self.hash,
-            created: self.created,
-            software: attributes::into_owned(self.software),
-            version: attributes::into_owned(self.version),
-            signature: attributes::into_owned(self.signature),
-            public_key: attributes::into_owned(self.public_key),
-        }
-    }
-}
-
 /// A domain-ownership identity signature: validated by a TLS certificate for
 /// [`domain`](Self::domain), with the signature itself countersigned by an RFC 3161 timestamp
 /// server to attest to the creation time.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DomainIdentitySignature<'a> {
     /// The SHA-256 digest of `datapackage.json` that was signed.
@@ -166,29 +141,11 @@ pub struct DomainIdentitySignature<'a> {
     pub cross_signed_cert: Option<Cow<'a, str>>,
 }
 
-impl DomainIdentitySignature<'_> {
-    /// Convert into a signature that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> DomainIdentitySignature<'static> {
-        DomainIdentitySignature {
-            hash: self.hash,
-            created: self.created,
-            software: attributes::into_owned(self.software),
-            version: attributes::into_owned(self.version),
-            signature: attributes::into_owned(self.signature),
-            domain: attributes::into_owned(self.domain),
-            domain_cert: attributes::into_owned(self.domain_cert),
-            time_signature: attributes::into_owned(self.time_signature),
-            timestamp_cert: attributes::into_owned(self.timestamp_cert),
-            cross_signed_cert: attributes::into_owned_option(self.cross_signed_cert),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::frictionless::DataPackageDigest;
+    use bounded_static::IntoBoundedStatic;
 
     /// A digest file with an anonymous signature envelope, shaped as in the signing
     /// specification.
@@ -279,7 +236,7 @@ mod tests {
             DOMAIN_DIGEST.to_owned(),
             serde_json::to_string(&cross_signed)?,
         ] {
-            let digest = serde_json::from_str::<DataPackageDigest<'_>>(&original)?.into_owned();
+            let digest = serde_json::from_str::<DataPackageDigest<'_>>(&original)?.into_static();
             let encoded = serde_json::to_string(&digest)?;
 
             assert_eq!(

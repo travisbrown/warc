@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-pub use warc_wacz::writer::IndexFormat;
+use warc_wacz::writer::IndexFormat;
 
 /// The default `User-Agent` header value, identifying this crate and its version.
 pub const DEFAULT_USER_AGENT: &str =

@@ -128,13 +128,3 @@ pub fn optional_integer_str<S: Serializer, T: Display>(
         None => serializer.serialize_none(),
     }
 }
-
-/// Convert a possibly borrowed string into an owned one with an unrestricted lifetime.
-pub fn into_owned<'b>(value: Cow<'_, str>) -> Cow<'b, str> {
-    Cow::Owned(value.into_owned())
-}
-
-/// [`into_owned`] lifted over optional values.
-pub fn into_owned_option<'b>(value: Option<Cow<'_, str>>) -> Option<Cow<'b, str>> {
-    value.map(into_owned)
-}

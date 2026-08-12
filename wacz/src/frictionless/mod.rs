@@ -13,9 +13,9 @@
 
 use std::borrow::Cow;
 
+use bounded_static::{IntoBoundedStatic, ToBoundedStatic, ToStatic};
 use chrono::{DateTime, Utc};
 
-use crate::attributes;
 use crate::digest::Sha256Digest;
 
 pub mod signature;
@@ -86,24 +86,29 @@ pub struct DataPackage<'a> {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-impl DataPackage<'_> {
-    /// Convert into a manifest that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> DataPackage<'static> {
+// Implemented by hand because the `extra` map's type has no `bounded_static` support.
+impl ToBoundedStatic for DataPackage<'_> {
+    type Static = DataPackage<'static>;
+
+    fn to_static(&self) -> Self::Static {
+        self.clone().into_static()
+    }
+}
+
+impl IntoBoundedStatic for DataPackage<'_> {
+    type Static = DataPackage<'static>;
+
+    fn into_static(self) -> Self::Static {
         DataPackage {
-            profile: attributes::into_owned(self.profile),
-            wacz_version: attributes::into_owned(self.wacz_version),
-            resources: self
-                .resources
-                .into_iter()
-                .map(Resource::into_owned)
-                .collect(),
-            title: attributes::into_owned_option(self.title),
-            description: attributes::into_owned_option(self.description),
+            profile: self.profile.into_static(),
+            wacz_version: self.wacz_version.into_static(),
+            resources: self.resources.into_static(),
+            title: self.title.into_static(),
+            description: self.description.into_static(),
             created: self.created,
             modified: self.modified,
-            software: attributes::into_owned_option(self.software),
-            main_page_url: attributes::into_owned_option(self.main_page_url),
+            software: self.software.into_static(),
+            main_page_url: self.main_page_url.into_static(),
             main_page_date: self.main_page_date,
             extra: self.extra,
         }
@@ -111,7 +116,7 @@ impl DataPackage<'_> {
 }
 
 /// A single member of the archive as listed in the manifest.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 pub struct Resource<'a> {
     /// The file name of the member (its path's final segment).
     #[serde(borrow)]
@@ -125,21 +130,8 @@ pub struct Resource<'a> {
     pub bytes: u64,
 }
 
-impl Resource<'_> {
-    /// Convert into a resource that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> Resource<'static> {
-        Resource {
-            name: attributes::into_owned(self.name),
-            path: attributes::into_owned(self.path),
-            hash: self.hash,
-            bytes: self.bytes,
-        }
-    }
-}
-
 /// A WACZ `datapackage-digest.json` file.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 pub struct DataPackageDigest<'a> {
     /// The path of the manifest the digest covers (always `datapackage.json`).
     #[serde(borrow)]
@@ -154,18 +146,6 @@ pub struct DataPackageDigest<'a> {
         skip_serializing_if = "Option::is_none"
     )]
     pub signed_data: Option<SignatureData<'a>>,
-}
-
-impl DataPackageDigest<'_> {
-    /// Convert into a digest that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> DataPackageDigest<'static> {
-        DataPackageDigest {
-            path: attributes::into_owned(self.path),
-            hash: self.hash,
-            signed_data: self.signed_data.map(SignatureData::into_owned),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -217,7 +197,7 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_extra_properties() -> Result<(), Box<dyn std::error::Error>> {
-        let package = serde_json::from_str::<DataPackage<'_>>(EXAMPLE)?.into_owned();
+        let package = serde_json::from_str::<DataPackage<'_>>(EXAMPLE)?.into_static();
         let encoded = serde_json::to_string(&package)?;
 
         assert_eq!(serde_json::from_str::<DataPackage<'_>>(&encoded)?, package);

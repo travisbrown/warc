@@ -12,6 +12,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+bounded-static = { version = "0.8.0", features = ["derive", "chrono"] }
 chrono = { workspace = true, features = ["serde"] }
 data-encoding.workspace = true
 libflate.workspace = true

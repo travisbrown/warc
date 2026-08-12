@@ -19,3 +19,4 @@ cli-helpers.workspace = true
 indicatif.workspace = true
 thiserror.workspace = true
 warc-archiver = { version = "0.4.0", path = "../archiver/" }
+warc-wacz = { version = "0.4.0", path = "../wacz/" }

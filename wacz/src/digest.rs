@@ -4,6 +4,7 @@ use std::fmt;
 use std::io::Read;
 use std::str::FromStr;
 
+use bounded_static::{IntoBoundedStatic, ToBoundedStatic};
 use serde::de::{Deserializer, Unexpected, Visitor};
 use serde::ser::Serializer;
 use sha2::Digest as _;
@@ -62,6 +63,22 @@ impl Sha256Digest {
         }
 
         Ok((Self(hasher.finalize().into()), length))
+    }
+}
+
+impl ToBoundedStatic for Sha256Digest {
+    type Static = Self;
+
+    fn to_static(&self) -> Self::Static {
+        *self
+    }
+}
+
+impl IntoBoundedStatic for Sha256Digest {
+    type Static = Self;
+
+    fn into_static(self) -> Self::Static {
+        self
     }
 }
 
