@@ -3,40 +3,42 @@
 #![allow(clippy::missing_errors_doc)]
 #![forbid(unsafe_code)]
 
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
 use std::io::BufRead;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use cli_helpers::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use warc_archiver::client::Archiver;
-use warc_archiver::config::Config;
-use warc_wacz::writer::IndexFormat;
+use warc_archiver::config::{Config, IndexFormat};
 
 fn main() -> Result<(), Error> {
     let opts: Opts = Opts::parse();
     opts.verbose.init_logging()?;
 
     let urls = read_urls(std::io::stdin().lock())?;
+    let defaults = Config::default();
     let config = Config {
-        user_agent: USER_AGENT.into(),
+        user_agent: opts.user_agent.unwrap_or(defaults.user_agent),
+        timeout: opts.timeout.map_or(defaults.timeout, Duration::from_secs),
+        max_redirects: opts.max_redirects.unwrap_or(defaults.max_redirects),
+        concurrency: opts.concurrency.unwrap_or(defaults.concurrency),
         gzip_warc: !opts.no_gzip,
         index_format: if opts.compressed_index {
             IndexFormat::zipnum()
         } else {
             IndexFormat::Plain
         },
-        ..Default::default()
     };
     let archiver = Archiver::new(config)?;
 
-    // The archiver pulls URLs from the iterator one at a time as it downloads them, so advancing
-    // the bar as each URL is drawn tracks the downloads themselves.
+    // The archiver pulls URLs from the iterator as it dispatches them for download, so the bar
+    // tracks dispatches, running at most the configured concurrency ahead of completions. It is
+    // cleared before the result is checked so that an error cannot leak a stuck bar.
     let progress = progress_bar(urls.len() as u64, "Archiving", "URLs");
-    let summary =
-        archiver.archive_to_path(urls.iter().inspect(|_| progress.inc(1)), &opts.output)?;
+    let result = archiver.archive_to_path(urls.iter().inspect(|_| progress.inc(1)), &opts.output);
     progress.finish_and_clear();
+    let summary = result?;
 
     for failure in &summary.failures {
         log::warn!("Failed to capture {}: {}", failure.url, failure.error);
@@ -82,12 +84,12 @@ fn progress_bar(len: u64, message: &'static str, unit: &str) -> ProgressBar {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("I/O error")]
+enum Error {
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("CLI argument reading error")]
+    #[error("CLI argument reading error: {0}")]
     Args(#[from] cli_helpers::Error),
-    #[error("archiving error")]
+    #[error("archiving error: {0}")]
     Archive(#[from] warc_archiver::client::Error),
 }
 
@@ -106,6 +108,18 @@ struct Opts {
     /// plain-text index.cdx.
     #[clap(long)]
     compressed_index: bool,
+    /// The User-Agent header value sent with every request (defaults to the archiver's own).
+    #[clap(long)]
+    user_agent: Option<String>,
+    /// The timeout in seconds for each request (defaults to 30).
+    #[clap(long)]
+    timeout: Option<u64>,
+    /// The maximum number of redirects followed for each URL (defaults to 10).
+    #[clap(long)]
+    max_redirects: Option<usize>,
+    /// The number of URLs downloaded concurrently (defaults to 1).
+    #[clap(long)]
+    concurrency: Option<usize>,
 }
 
 #[cfg(test)]
