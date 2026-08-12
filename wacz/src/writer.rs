@@ -90,8 +90,9 @@ impl<W: Write + Seek> WaczWriter<W> {
 
     /// Add WARC data under `archive/` with the given file name.
     ///
-    /// Names ending in `.gz` must hold gzip data, which is stored in the ZIP without
-    /// recompression as the specification requires; other members are DEFLATE-compressed.
+    /// As the specification requires, `archive/` members are always stored in the ZIP without
+    /// compression (`STORE`), so that readers can seek to CDX offsets within them. Names
+    /// ending in `.gz` must hold gzip data.
     pub fn add_warc<R: Read>(&mut self, name: &str, reader: R) -> Result<(), Error> {
         self.add_resource(&format!("{ARCHIVE_PREFIX}{name}"), reader)
     }
@@ -157,10 +158,11 @@ impl<W: Write + Seek> WaczWriter<W> {
 
     /// Add an arbitrary member at the given path, recording it in the manifest.
     ///
-    /// Paths ending in `.gz` must hold gzip data, which is stored in the ZIP without
-    /// recompression; other members are DEFLATE-compressed. The specification permits custom
-    /// members anywhere outside of the `archive/`, `indexes/`, and `pages/` directories, which
-    /// are reserved for the dedicated methods.
+    /// Members under `archive/` and paths ending in `.gz` (which must hold gzip data) are
+    /// stored in the ZIP without compression (`STORE`), as the specification requires; other
+    /// members are DEFLATE-compressed. The specification permits custom members anywhere
+    /// outside of the `archive/`, `indexes/`, and `pages/` directories, which are reserved
+    /// for the dedicated methods.
     pub fn add_resource<R: Read>(&mut self, path: &str, mut reader: R) -> Result<(), Error> {
         self.add_member(path, options_for(path), |writer| {
             std::io::copy(&mut reader, writer)?;
@@ -273,9 +275,14 @@ impl<W: Write> Write for HashingWriter<W> {
     }
 }
 
-/// The ZIP entry options for a member, storing gzip data without recompression.
+/// The ZIP entry options for a member.
+///
+/// The specification requires the `STORE` method for all `archive/` members (readers seek to
+/// CDX offsets within them, which ZIP-level compression would break) and for gzip members
+/// anywhere (already-compressed data must not be compressed again); only plain-text members
+/// may use `DEFLATE`.
 fn options_for(path: &str) -> SimpleFileOptions {
-    if path.ends_with(GZIP_EXTENSION) {
+    if path.starts_with(ARCHIVE_PREFIX) || path.ends_with(GZIP_EXTENSION) {
         // `large_file` permits members over the ZIP64 threshold, at a cost of a few bytes of
         // header overhead per member.
         SimpleFileOptions::default()
