@@ -23,6 +23,8 @@ pub enum WarcHeader {
     Profile,
     RecordID,
     RefersTo,
+    RefersToDate,
+    RefersToTargetURI,
     SegmentNumber,
     SegmentOriginID,
     SegmentTotalLength,
@@ -54,6 +56,8 @@ impl Display for WarcHeader {
             WarcHeader::Profile => "warc-profile",
             WarcHeader::RecordID => "warc-record-id",
             WarcHeader::RefersTo => "warc-refers-to",
+            WarcHeader::RefersToDate => "warc-refers-to-date",
+            WarcHeader::RefersToTargetURI => "warc-refers-to-target-uri",
             WarcHeader::SegmentNumber => "warc-segment-number",
             WarcHeader::SegmentOriginID => "warc-segment-origin-id",
             WarcHeader::SegmentTotalLength => "warc-segment-total-length",
@@ -67,7 +71,7 @@ impl Display for WarcHeader {
     }
 }
 
-const KNOWN_HEADERS: [(&str, WarcHeader); 19] = [
+const KNOWN_HEADERS: [(&str, WarcHeader); 21] = [
     ("content-length", WarcHeader::ContentLength),
     ("content-type", WarcHeader::ContentType),
     ("warc-block-digest", WarcHeader::BlockDigest),
@@ -83,6 +87,8 @@ const KNOWN_HEADERS: [(&str, WarcHeader); 19] = [
     ("warc-profile", WarcHeader::Profile),
     ("warc-record-id", WarcHeader::RecordID),
     ("warc-refers-to", WarcHeader::RefersTo),
+    ("warc-refers-to-date", WarcHeader::RefersToDate),
+    ("warc-refers-to-target-uri", WarcHeader::RefersToTargetURI),
     ("warc-segment-number", WarcHeader::SegmentNumber),
     ("warc-segment-origin-id", WarcHeader::SegmentOriginID),
     ("warc-segment-total-length", WarcHeader::SegmentTotalLength),
@@ -100,5 +106,23 @@ impl<S: AsRef<str>> From<S> for WarcHeader {
             .find(|(name, _)| string.eq_ignore_ascii_case(name))
             .map(|(_, header)| header.clone())
             .unwrap_or_else(|| WarcHeader::Unknown(string.to_lowercase()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WarcHeader;
+
+    /// The named fields added in WARC 1.1 map in both directions.
+    #[test]
+    fn warc_1_1_headers_round_trip() {
+        for (name, header) in [
+            ("warc-refers-to-date", WarcHeader::RefersToDate),
+            ("warc-refers-to-target-uri", WarcHeader::RefersToTargetURI),
+        ] {
+            assert_eq!(WarcHeader::from(name), header);
+            assert_eq!(WarcHeader::from(name.to_uppercase().as_str()), header);
+            assert_eq!(header.to_string(), name);
+        }
     }
 }
