@@ -125,6 +125,28 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(records.len(), 9);
     assert_eq!(records[0].warc_type(), &RecordType::WarcInfo);
 
+    // WARC 1.1 compliance of every emitted record: version, bracketed record ids, and target
+    // URIs written bare (the 1.1 change from the bracketed 1.0 form).
+    for record in &records {
+        assert_eq!(record.warc_version(), "1.1");
+        assert!(record.warc_id().starts_with('<') && record.warc_id().ends_with('>'));
+        if let Some(target) = record.header(WarcHeader::TargetURI) {
+            assert!(!target.starts_with('<'));
+        }
+    }
+
+    // The warcinfo record carries its recommended fields and none of its prohibited ones.
+    let warcinfo = &records[0];
+    assert_eq!(
+        warcinfo.header(WarcHeader::ContentType).as_deref(),
+        Some("application/warc-fields")
+    );
+    assert_eq!(
+        warcinfo.header(WarcHeader::Filename).as_deref(),
+        Some("data.warc.gz")
+    );
+    assert!(warcinfo.header(WarcHeader::TargetURI).is_none());
+
     let response = &records[1];
     let request = &records[2];
 
@@ -135,10 +157,37 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert!(response.body().ends_with(b"<html>home</html>"));
 
+    assert_eq!(
+        response.header(WarcHeader::ContentType).as_deref(),
+        Some("application/http;msgtype=response")
+    );
+    assert!(
+        response
+            .header(WarcHeader::PayloadDigest)
+            .is_some_and(|digest| digest.starts_with("sha256:"))
+    );
+    assert_eq!(
+        response.header(WarcHeader::IPAddress).as_deref(),
+        Some("127.0.0.1")
+    );
+    assert_eq!(
+        response.header(WarcHeader::WarcInfoID).as_deref(),
+        Some(warcinfo.warc_id())
+    );
+
     assert_eq!(request.warc_type(), &RecordType::Request);
     assert_eq!(
         request.header(WarcHeader::ConcurrentTo).as_deref(),
         Some(response.warc_id())
+    );
+    assert_eq!(
+        request.header(WarcHeader::ContentType).as_deref(),
+        Some("application/http;msgtype=request")
+    );
+    // Records of one capture event share a single WARC-Date.
+    assert_eq!(
+        response.header(WarcHeader::Date),
+        request.header(WarcHeader::Date)
     );
 
     let request_message = String::from_utf8(request.body().to_vec())?;
