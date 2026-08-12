@@ -10,8 +10,8 @@ use zip::ZipArchive;
 use zip::result::ZipError;
 
 use crate::cdxj::IndexReader;
-use crate::datapackage::{DataPackage, DataPackageDigest};
 use crate::digest::Sha256Digest;
+use crate::frictionless::{DataPackage, DataPackageDigest};
 use crate::pages::PageListReader;
 use crate::{
     ARCHIVE_PREFIX, DATA_PACKAGE_DIGEST_PATH, DATA_PACKAGE_PATH, GZIP_EXTENSION, INDEXES_PREFIX,

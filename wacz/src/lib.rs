@@ -8,7 +8,7 @@
 //! # Modules
 //!
 //! - [`cdxj`]: CDXJ index lines mapping searchable URL keys to WARC records
-//! - [`datapackage`]: The `datapackage.json` manifest and `datapackage-digest.json` formats
+//! - [`frictionless`]: The `datapackage.json` manifest and `datapackage-digest.json` formats
 //! - [`digest`]: SHA-256 digests in the `sha256:<hex>` encoding used by WACZ manifests
 //! - [`pages`]: The `pages/pages.jsonl` page list format
 //! - [`reader`]: Reading the members of an existing WACZ file
@@ -25,8 +25,8 @@
 
 mod attributes;
 pub mod cdxj;
-pub mod datapackage;
 pub mod digest;
+pub mod frictionless;
 pub mod pages;
 pub mod reader;
 pub mod writer;
