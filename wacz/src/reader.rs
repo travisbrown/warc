@@ -9,6 +9,8 @@ use warc::WarcReader;
 use zip::ZipArchive;
 use zip::result::ZipError;
 
+use bounded_static::IntoBoundedStatic;
+
 use crate::cdxj::IndexReader;
 use crate::digest::Sha256Digest;
 use crate::frictionless::{DataPackage, DataPackageDigest};
@@ -92,7 +94,7 @@ impl<R: Read + Seek> WaczReader<R> {
         let bytes = self.member_bytes(DATA_PACKAGE_PATH)?;
 
         serde_json::from_slice::<DataPackage<'_>>(&bytes)
-            .map(DataPackage::into_owned)
+            .map(IntoBoundedStatic::into_static)
             .map_err(Error::InvalidDataPackage)
     }
 
@@ -102,7 +104,7 @@ impl<R: Read + Seek> WaczReader<R> {
     pub fn data_package_digest(&mut self) -> Result<Option<DataPackageDigest<'static>>, Error> {
         match self.member_bytes(DATA_PACKAGE_DIGEST_PATH) {
             Ok(bytes) => serde_json::from_slice::<DataPackageDigest<'_>>(&bytes)
-                .map(|digest| Some(digest.into_owned()))
+                .map(|digest| Some(digest.into_static()))
                 .map_err(Error::InvalidDataPackageDigest),
             Err(Error::MissingMember(_)) => Ok(None),
             Err(error) => Err(error),
@@ -152,7 +154,7 @@ impl<R: Read + Seek> WaczReader<R> {
     pub fn verify(&mut self) -> Result<Verification, Error> {
         let manifest_bytes = self.member_bytes(DATA_PACKAGE_PATH)?;
         let package = serde_json::from_slice::<DataPackage<'_>>(&manifest_bytes)
-            .map(DataPackage::into_owned)
+            .map(IntoBoundedStatic::into_static)
             .map_err(Error::InvalidDataPackage)?;
 
         let mut verification = Verification::default();

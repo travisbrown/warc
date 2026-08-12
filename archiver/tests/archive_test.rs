@@ -7,9 +7,10 @@ use std::thread;
 use libflate::gzip;
 use warc::{RecordType, WarcHeader};
 use warc_archiver::client::Archiver;
-use warc_archiver::config::{Config, IndexFormat};
+use warc_archiver::config::Config;
 use warc_wacz::cdxj;
 use warc_wacz::reader::WaczReader;
+use warc_wacz::writer::IndexFormat;
 
 /// A canned HTTP/1.1 response for a request path.
 fn respond(path: &str) -> Vec<u8> {

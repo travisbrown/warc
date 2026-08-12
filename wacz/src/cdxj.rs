@@ -11,9 +11,8 @@ use std::fmt;
 use std::io::BufRead;
 use std::str::FromStr;
 
+use bounded_static::{IntoBoundedStatic, ToBoundedStatic, ToStatic};
 use chrono::{DateTime, NaiveDateTime, Utc};
-
-use crate::attributes;
 
 /// The timestamp format used in CDXJ lines.
 const TIMESTAMP_FORMAT: &str = "%Y%m%d%H%M%S";
@@ -42,7 +41,7 @@ pub enum Error {
 }
 
 /// A 14-digit CDX timestamp (`YYYYmmddHHMMSS`, always UTC).
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, ToStatic)]
 pub struct Timestamp(
     /// The underlying instant. Values are truncated to second precision on parsing and
     /// formatting, since the encoding cannot represent fractional seconds.
@@ -78,7 +77,7 @@ impl From<DateTime<Utc>> for Timestamp {
 }
 
 /// A single CDXJ index line.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic)]
 pub struct Item<'a> {
     /// The searchable URL key the line is sorted by.
     pub key: Cow<'a, str>,
@@ -108,16 +107,6 @@ impl<'a> Item<'a> {
             timestamp: timestamp.parse()?,
             fields: serde_json::from_str(fields).map_err(Error::InvalidFields)?,
         })
-    }
-
-    /// Convert into an item that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> Item<'static> {
-        Item {
-            key: attributes::into_owned(self.key),
-            timestamp: self.timestamp,
-            fields: self.fields.into_owned(),
-        }
     }
 }
 
@@ -190,18 +179,27 @@ pub struct Fields<'a> {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-impl Fields<'_> {
-    /// Convert into a field block that owns all of its data.
-    #[must_use]
-    pub fn into_owned(self) -> Fields<'static> {
+// Implemented by hand because the `extra` map's type has no `bounded_static` support.
+impl ToBoundedStatic for Fields<'_> {
+    type Static = Fields<'static>;
+
+    fn to_static(&self) -> Self::Static {
+        self.clone().into_static()
+    }
+}
+
+impl IntoBoundedStatic for Fields<'_> {
+    type Static = Fields<'static>;
+
+    fn into_static(self) -> Self::Static {
         Fields {
-            url: attributes::into_owned(self.url),
-            digest: attributes::into_owned_option(self.digest),
-            mime: attributes::into_owned_option(self.mime),
+            url: self.url.into_static(),
+            digest: self.digest.into_static(),
+            mime: self.mime.into_static(),
             status: self.status,
             offset: self.offset,
             length: self.length,
-            filename: attributes::into_owned_option(self.filename),
+            filename: self.filename.into_static(),
             extra: self.extra,
         }
     }
@@ -244,7 +242,7 @@ impl<R: BufRead> Iterator for IndexReader<R> {
                         continue;
                     }
 
-                    return Some(Item::parse(content).map(Item::into_owned));
+                    return Some(Item::parse(content).map(IntoBoundedStatic::into_static));
                 }
                 Err(error) => return Some(Err(Error::Io(error))),
             }

@@ -11,7 +11,8 @@ use std::path::PathBuf;
 use cli_helpers::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use warc_archiver::client::Archiver;
-use warc_archiver::config::{Config, IndexFormat};
+use warc_archiver::config::Config;
+use warc_wacz::writer::IndexFormat;
 
 fn main() -> Result<(), Error> {
     let opts: Opts = Opts::parse();
