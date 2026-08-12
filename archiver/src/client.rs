@@ -192,7 +192,7 @@ impl Archiver {
 
         let warcinfo = warcinfo_record(warc_name)?;
         let warcinfo_id = warcinfo.warc_id().to_owned();
-        let mut offset = write_record(&mut spool, &warcinfo, gzip)?;
+        let (mut offset, _) = write_record(&mut spool, &warcinfo, gzip)?;
 
         for url in urls {
             let url = url.as_ref();
@@ -351,26 +351,32 @@ fn next_location(current: &Url, status: StatusCode, headers: &HeaderMap) -> Opti
     matches!(next.scheme(), "http" | "https").then_some(next)
 }
 
-/// Write one record to the spooled WARC member, returning the number of bytes written.
+/// Write one record to the spooled WARC member, returning the number of bytes written and
+/// their SHA-256 digest.
 ///
 /// When `gzip` is set, the record is compressed as an independent gzip member, following the
 /// WARC convention, so that the returned length (and therefore the index offsets derived from
-/// it) frames a complete member that can be decompressed on its own.
+/// it) frames a complete member that can be decompressed on its own. The digest is of the
+/// stored bytes — the compressed member when compressing — so that it covers exactly the
+/// framed range.
 fn write_record<W: Write>(
     writer: &mut W,
     record: &Record<BufferedBody>,
     gzip: bool,
-) -> Result<u64, Error> {
-    if gzip {
+) -> Result<(u64, Sha256Digest), Error> {
+    let stored = if gzip {
         let mut encoder = gzip::Encoder::new(Vec::new())?;
         WarcWriter::new(&mut encoder).write(record)?;
-        let compressed = encoder.finish().into_result()?;
-        writer.write_all(&compressed)?;
-
-        Ok(compressed.len() as u64)
+        encoder.finish().into_result()?
     } else {
-        Ok(WarcWriter::new(writer).write(record)? as u64)
-    }
+        let mut bytes = Vec::new();
+        WarcWriter::new(&mut bytes).write(record)?;
+        bytes
+    };
+
+    writer.write_all(&stored)?;
+
+    Ok((stored.len() as u64, Sha256Digest::compute(&stored)))
 }
 
 /// Build and write the response and request records for an exchange, returning the CDXJ index
@@ -410,8 +416,8 @@ fn write_exchange<W: Write>(
         .body(exchange.request)
         .build()?;
 
-    let response_length = write_record(writer, &response, gzip)?;
-    let request_length = write_record(writer, &request, gzip)?;
+    let (response_length, response_digest) = write_record(writer, &response, gzip)?;
+    let (request_length, _) = write_record(writer, &request, gzip)?;
 
     let item = cdxj::Item {
         key: Cow::Owned(exchange.key),
@@ -424,6 +430,7 @@ fn write_exchange<W: Write>(
             offset: Some(offset),
             length: Some(response_length),
             filename: Some(Cow::Borrowed(warc_name)),
+            record_digest: Some(response_digest),
             extra: serde_json::Map::new(),
         },
     };

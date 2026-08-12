@@ -14,6 +14,8 @@ use std::str::FromStr;
 use bounded_static::{IntoBoundedStatic, ToBoundedStatic, ToStatic};
 use chrono::{DateTime, NaiveDateTime, Utc};
 
+use crate::digest::Sha256Digest;
+
 /// The timestamp format used in CDXJ lines.
 const TIMESTAMP_FORMAT: &str = "%Y%m%d%H%M%S";
 
@@ -174,6 +176,15 @@ pub struct Fields<'a> {
         skip_serializing_if = "Option::is_none"
     )]
     pub filename: Option<Cow<'a, str>>,
+    /// The SHA-256 digest of the raw stored bytes framed by [`offset`](Self::offset) and
+    /// [`length`](Self::length) — the record's compressed member in a gzip WARC file, or its
+    /// serialized bytes in a plain one — allowing verification of range reads.
+    #[serde(
+        rename = "recordDigest",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub record_digest: Option<Sha256Digest>,
     /// Additional properties, preserved verbatim for round-tripping.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -200,6 +211,7 @@ impl IntoBoundedStatic for Fields<'_> {
             offset: self.offset,
             length: self.length,
             filename: self.filename.into_static(),
+            record_digest: self.record_digest,
             extra: self.extra,
         }
     }
