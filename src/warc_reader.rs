@@ -104,12 +104,20 @@ fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> 
         )
     })?;
 
+    // The specification forbids repeating a field (other than `WARC-Concurrent-To`, which this
+    // representation cannot hold more than once). If a record repeats one anyway, keep the
+    // first occurrence: it is the `Content-Length` the parser framed the body with, so the
+    // headers reported always match the body actually read.
+    let mut header_map = indexmap::IndexMap::with_capacity(headers.len());
+    for (token, value) in headers {
+        header_map
+            .entry(token.into())
+            .or_insert_with(|| value.into_owned());
+    }
+
     let headers = RawRecordHeader {
         version: version.to_owned(),
-        headers: headers
-            .into_iter()
-            .map(|(token, value)| (token.into(), value.to_owned()))
-            .collect(),
+        headers: header_map,
     };
 
     Ok((headers, expected_body_len))
@@ -414,6 +422,67 @@ mod iter_raw_tests {
         assert_eq!(headers.version, expected_version);
         assert_eq!(headers.as_ref(), &expected_headers);
         assert_eq!(body, expected_body);
+    }
+
+    /// A field value folded across lines with leading whitespace is unfolded, each fold
+    /// reading as a single space.
+    #[test]
+    fn folded_header_value_is_unfolded() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: metadata\r\n\
+            Content-Length: 0\r\n\
+            WARC-Record-ID: <urn:test:folded:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            Unfolded-Test: this value\r\n\
+            \tspans lines\r\n\
+            \r\n\
+            \r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        let (headers, body) = reader.next().unwrap().unwrap();
+        assert!(body.is_empty());
+        assert_eq!(
+            headers
+                .as_ref()
+                .get(&WarcHeader::Unknown("unfolded-test".to_owned()))
+                .unwrap(),
+            &b"this value spans lines".to_vec()
+        );
+    }
+
+    /// The specification forbids repeating a named field; when a record repeats one anyway,
+    /// the first occurrence wins consistently: the body is framed by the first
+    /// `Content-Length`, so the surviving header values must be the first ones too.
+    #[test]
+    fn repeated_field_keeps_first_occurrence() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            Content-Length: 500\r\n\
+            WARC-Record-ID: <urn:test:repeated:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            WARC-Target-URI: https://example.com/first\r\n\
+            WARC-Target-URI: https://example.com/second\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        let (headers, body) = reader.next().unwrap().unwrap();
+        assert_eq!(body, b"12345");
+        assert_eq!(
+            headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
+            &b"5".to_vec()
+        );
+        assert_eq!(
+            headers.as_ref().get(&WarcHeader::TargetURI).unwrap(),
+            &b"https://example.com/first".to_vec()
+        );
     }
 
     #[test]
