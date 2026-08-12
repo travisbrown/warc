@@ -15,7 +15,7 @@ use warc::{BufferedBody, Record, RecordBuilder, RecordType, WarcHeader, WarcWrit
 use warc_wacz::cdxj;
 use warc_wacz::digest::Sha256Digest;
 use warc_wacz::pages::{Page, PageListHeader};
-use warc_wacz::writer::{PackageMetadata, WaczWriter};
+use warc_wacz::writer::{PackageMetadata, WaczWriter, WriterConfig};
 
 use crate::config::{Config, DEFAULT_USER_AGENT};
 use crate::http;
@@ -150,7 +150,10 @@ impl Archiver {
         urls: I,
         path: P,
     ) -> Result<ArchiveSummary, Error> {
-        self.archive_into(urls, WaczWriter::create(path)?)
+        self.archive_into(
+            urls,
+            WaczWriter::create_with_config(path, self.writer_config())?,
+        )
     }
 
     /// Download each URL and write a WACZ file to the given writer.
@@ -159,7 +162,15 @@ impl Archiver {
         urls: I,
         writer: W,
     ) -> Result<ArchiveSummary, Error> {
-        self.archive_into(urls, WaczWriter::new(writer))
+        self.archive_into(urls, WaczWriter::with_config(writer, self.writer_config()))
+    }
+
+    /// The WACZ writer configuration derived from this client's configuration.
+    fn writer_config(&self) -> WriterConfig {
+        WriterConfig {
+            index_format: self.config.index_format,
+            ..WriterConfig::default()
+        }
     }
 
     /// Capture each URL into a spooled WARC file and assemble the WACZ members around it.

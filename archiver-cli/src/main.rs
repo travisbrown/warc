@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use cli_helpers::prelude::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use warc_archiver::client::Archiver;
-use warc_archiver::config::Config;
+use warc_archiver::config::{Config, IndexFormat};
 
 fn main() -> Result<(), Error> {
     let opts: Opts = Opts::parse();
@@ -21,6 +21,11 @@ fn main() -> Result<(), Error> {
     let config = Config {
         user_agent: USER_AGENT.into(),
         gzip_warc: !opts.no_gzip,
+        index_format: if opts.compressed_index {
+            IndexFormat::zipnum()
+        } else {
+            IndexFormat::Plain
+        },
         ..Default::default()
     };
     let archiver = Archiver::new(config)?;
@@ -96,6 +101,10 @@ struct Opts {
     /// Store the WARC member uncompressed instead of gzip-compressed.
     #[clap(long)]
     no_gzip: bool,
+    /// Write the index as a compressed ZipNum pair (index.cdx.gz and index.idx) instead of a
+    /// plain-text index.cdx.
+    #[clap(long)]
+    compressed_index: bool,
 }
 
 #[cfg(test)]

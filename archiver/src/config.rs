@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+pub use warc_wacz::writer::IndexFormat;
+
 /// The default `User-Agent` header value, identifying this crate and its version.
 pub const DEFAULT_USER_AGENT: &str =
     concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
@@ -24,17 +26,21 @@ pub struct Config {
     /// so that the index offsets frame complete members that replay tools can decompress
     /// without reading the rest of the file.
     pub gzip_warc: bool,
+    /// The format of the CDXJ index members written into the WACZ file: a plain-text
+    /// `index.cdx`, or a ZipNum compressed `index.cdx.gz` and `index.idx` pair.
+    pub index_format: IndexFormat,
 }
 
 impl Default for Config {
     /// The default configuration: this crate's `User-Agent`, a 30-second timeout, at most ten
-    /// redirects per URL, and a gzip-compressed WARC member.
+    /// redirects per URL, a gzip-compressed WARC member, and a plain-text index.
     fn default() -> Self {
         Self {
             user_agent: DEFAULT_USER_AGENT.to_owned(),
             timeout: Duration::from_secs(30),
             max_redirects: 10,
             gzip_warc: true,
+            index_format: IndexFormat::Plain,
         }
     }
 }
