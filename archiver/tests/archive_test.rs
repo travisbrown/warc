@@ -4,6 +4,7 @@ use std::io::{Cursor, Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
+use libflate::gzip;
 use warc::{RecordType, WarcHeader};
 use warc_archiver::client::Archiver;
 use warc_archiver::config::Config;
@@ -106,10 +107,16 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
         urls.iter().map(String::as_str).collect::<Vec<_>>()
     );
     assert_eq!(pages[1].size, Some("arrived".len() as u64));
+    // Every page receives a synthetic id of the default 24-character length.
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.id.as_deref().is_some_and(|id| id.len() == 24))
+    );
 
     // One warcinfo record plus a response and request record for each of the four exchanges.
     let records = reader
-        .warc("archive/data.warc")?
+        .warc("archive/data.warc.gz")?
         .iter_records()
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -162,16 +169,23 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
         Some(404)
     );
 
-    // Every index entry's offset and length must frame exactly one parseable response record.
+    // Every index entry's offset and length must frame exactly one complete gzip member,
+    // decompressible on its own, holding one parseable response record.
     let mut warc_bytes = Vec::new();
     zip::ZipArchive::new(Cursor::new(&bytes))?
-        .by_name("archive/data.warc")?
+        .by_name("archive/data.warc.gz")?
         .read_to_end(&mut warc_bytes)?;
 
     for item in &items {
+        assert_eq!(item.fields.filename.as_deref(), Some("data.warc.gz"));
+
         let offset = usize::try_from(item.fields.offset.expect("offset should be indexed"))?;
         let length = usize::try_from(item.fields.length.expect("length should be indexed"))?;
-        let framed = warc::WarcReader::new(&warc_bytes[offset..offset + length])
+
+        let mut decompressed = Vec::new();
+        gzip::Decoder::new(&warc_bytes[offset..offset + length])?.read_to_end(&mut decompressed)?;
+
+        let framed = warc::WarcReader::new(decompressed.as_slice())
             .iter_records()
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -182,6 +196,57 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
             Some(item.fields.url.as_ref())
         );
     }
+
+    Ok(())
+}
+
+#[test]
+fn archive_with_plain_warc_member() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, server) = serve(1)?;
+    let url = format!("http://127.0.0.1:{port}/");
+
+    let archiver = Archiver::new(Config {
+        gzip_warc: false,
+        ..Config::default()
+    })?;
+    let mut bytes = Vec::new();
+    let summary = archiver.archive([&url], Cursor::new(&mut bytes))?;
+    server.join().expect("server thread should not panic");
+
+    assert!(summary.is_complete());
+
+    let mut reader = WaczReader::new(Cursor::new(&bytes))?;
+
+    assert!(reader.verify()?.is_success());
+
+    let records = reader
+        .warc("archive/data.warc")?
+        .iter_records()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(records.len(), 3);
+
+    let items = reader
+        .index("indexes/index.cdx")?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].fields.filename.as_deref(), Some("data.warc"));
+
+    // The offset and length frame the uncompressed response record directly.
+    let mut warc_bytes = Vec::new();
+    zip::ZipArchive::new(Cursor::new(&bytes))?
+        .by_name("archive/data.warc")?
+        .read_to_end(&mut warc_bytes)?;
+
+    let offset = usize::try_from(items[0].fields.offset.expect("offset should be indexed"))?;
+    let length = usize::try_from(items[0].fields.length.expect("length should be indexed"))?;
+    let framed = warc::WarcReader::new(&warc_bytes[offset..offset + length])
+        .iter_records()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(framed.len(), 1);
+    assert_eq!(framed[0].warc_type(), &RecordType::Response);
 
     Ok(())
 }

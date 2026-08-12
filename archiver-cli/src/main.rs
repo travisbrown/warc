@@ -20,6 +20,7 @@ fn main() -> Result<(), Error> {
     let urls = read_urls(std::io::stdin().lock())?;
     let config = Config {
         user_agent: USER_AGENT.into(),
+        gzip_warc: !opts.no_gzip,
         ..Default::default()
     };
     let archiver = Archiver::new(config)?;
@@ -92,6 +93,9 @@ struct Opts {
     /// Path of the WACZ file to write (an existing file is not overwritten).
     #[clap(long)]
     output: PathBuf,
+    /// Store the WARC member uncompressed instead of gzip-compressed.
+    #[clap(long)]
+    no_gzip: bool,
 }
 
 #[cfg(test)]

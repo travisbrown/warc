@@ -7,9 +7,10 @@ use chrono::{TimeZone, Utc};
 use libflate::gzip;
 use warc::{RecordBuilder, RecordType, WarcHeader, WarcWriter};
 use warc_wacz::cdxj;
+use warc_wacz::pages;
 use warc_wacz::pages::{Page, PageListHeader};
 use warc_wacz::reader::WaczReader;
-use warc_wacz::writer::{PackageMetadata, WaczWriter};
+use warc_wacz::writer::{PackageMetadata, WaczWriter, WriterConfig};
 
 const URL: &str = "https://www.example.com/page";
 const BODY: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html>hello</html>";
@@ -157,6 +158,48 @@ fn round_trip_with_gzip_warc_member() -> Result<(), Box<dyn std::error::Error>> 
     let compressed = encoder.finish().into_result()?;
 
     assert_round_trip("data.warc.gz", &compressed)
+}
+
+/// Pages written without an identifier receive a synthetic one of the configured length;
+/// explicitly supplied identifiers are preserved.
+#[test]
+fn synthetic_page_ids() -> Result<(), Box<dyn std::error::Error>> {
+    let capture_time = Utc.with_ymd_and_hms(2020, 10, 7, 21, 22, 36).unwrap();
+    let with_id = Page {
+        url: Cow::Borrowed(URL),
+        ts: capture_time,
+        id: Some(Cow::Borrowed("explicit-id")),
+        title: None,
+        text: None,
+        size: None,
+        extra: serde_json::Map::new(),
+    };
+    let without_id = Page {
+        url: Cow::Borrowed("https://www.example.com/other"),
+        id: None,
+        ..with_id.clone()
+    };
+
+    for (length, config) in [
+        (24, WriterConfig::default()),
+        (16, WriterConfig { page_id_length: 16 }),
+    ] {
+        let mut writer = WaczWriter::with_config(Cursor::new(Vec::new()), config);
+        writer.add_pages(&PageListHeader::default(), [&with_id, &without_id])?;
+        let wacz = writer.finish(PackageMetadata::default())?.into_inner();
+
+        let mut reader = WaczReader::new(Cursor::new(wacz))?;
+        let pages = reader.pages()?.collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(pages[0].id.as_deref(), Some("explicit-id"));
+        assert_eq!(
+            pages[1].id.as_deref(),
+            Some(pages::synthetic_id(&capture_time, &pages[1].url, length).as_str())
+        );
+        assert_eq!(pages[1].id.as_deref().map(str::len), Some(length));
+    }
+
+    Ok(())
 }
 
 /// The specification requires the `STORE` method for all `archive/` members and permits

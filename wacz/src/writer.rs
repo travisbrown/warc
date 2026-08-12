@@ -22,6 +22,26 @@ use crate::{
 /// The default `software` manifest property written by this crate.
 const SOFTWARE: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
+/// The default number of characters in synthetic page identifiers.
+const DEFAULT_PAGE_ID_LENGTH: usize = 24;
+
+/// Configuration for WACZ creation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WriterConfig {
+    /// The number of characters in the synthetic identifiers given to pages written without one
+    /// (see [`pages::synthetic_id`]).
+    pub page_id_length: usize,
+}
+
+impl Default for WriterConfig {
+    /// The default configuration: 24-character synthetic page identifiers.
+    fn default() -> Self {
+        Self {
+            page_id_length: DEFAULT_PAGE_ID_LENGTH,
+        }
+    }
+}
+
 /// An error type for WACZ writing.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -69,6 +89,7 @@ pub struct PackageMetadata {
 pub struct WaczWriter<W: Write + Seek> {
     zip: ZipWriter<W>,
     resources: Vec<Resource<'static>>,
+    config: WriterConfig,
 }
 
 impl WaczWriter<BufWriter<File>> {
@@ -79,12 +100,19 @@ impl WaczWriter<BufWriter<File>> {
 }
 
 impl<W: Write + Seek> WaczWriter<W> {
-    /// Create a new writer.
+    /// Create a new writer with the default configuration.
     #[must_use]
     pub fn new(writer: W) -> Self {
+        Self::with_config(writer, WriterConfig::default())
+    }
+
+    /// Create a new writer with the given configuration.
+    #[must_use]
+    pub fn with_config(writer: W, config: WriterConfig) -> Self {
         Self {
             zip: ZipWriter::new(writer),
             resources: Vec::new(),
+            config,
         }
     }
 
@@ -135,6 +163,10 @@ impl<W: Write + Seek> WaczWriter<W> {
     }
 
     /// Write the required page list at `pages/pages.jsonl`.
+    ///
+    /// Pages without an identifier are given a synthetic one derived from their timestamp and
+    /// URL (see [`pages::synthetic_id`]), truncated to the configured
+    /// [`page_id_length`](WriterConfig::page_id_length).
     pub fn add_pages<'a, I: IntoIterator<Item = &'a Page<'a>>>(
         &mut self,
         header: &PageListHeader<'_>,
@@ -145,14 +177,38 @@ impl<W: Write + Seek> WaczWriter<W> {
 
     /// Write a page list member under `pages/` with the given file name (for example
     /// `extraPages.jsonl`).
+    ///
+    /// Pages without an identifier are given a synthetic one derived from their timestamp and
+    /// URL (see [`pages::synthetic_id`]), truncated to the configured
+    /// [`page_id_length`](WriterConfig::page_id_length).
     pub fn add_page_list<'a, I: IntoIterator<Item = &'a Page<'a>>>(
         &mut self,
         name: &str,
         header: &PageListHeader<'_>,
         pages: I,
     ) -> Result<(), Error> {
+        let id_length = self.config.page_id_length;
+        let pages = pages
+            .into_iter()
+            .map(|page| {
+                if page.id.is_some() {
+                    Cow::Borrowed(page)
+                } else {
+                    let mut page = page.clone();
+                    page.id = Some(Cow::Owned(pages::synthetic_id(
+                        &page.ts, &page.url, id_length,
+                    )));
+                    Cow::Owned(page)
+                }
+            })
+            .collect::<Vec<_>>();
+
         self.add_member(&format!("{PAGES_PREFIX}{name}"), deflated(), |writer| {
-            Ok(pages::write_page_list(writer, header, pages)?)
+            Ok(pages::write_page_list(
+                writer,
+                header,
+                pages.iter().map(Cow::as_ref),
+            )?)
         })
     }
 
@@ -174,7 +230,11 @@ impl<W: Write + Seek> WaczWriter<W> {
     /// Write the manifest and digest members and finish the ZIP, returning the underlying
     /// writer.
     pub fn finish(self, metadata: PackageMetadata) -> Result<W, Error> {
-        let Self { mut zip, resources } = self;
+        let Self {
+            mut zip,
+            resources,
+            config: _,
+        } = self;
 
         let package = DataPackage {
             profile: Cow::Borrowed(PROFILE),
