@@ -49,6 +49,7 @@ fn build_wacz(warc_name: &str, warc_data: &[u8]) -> Result<Vec<u8>, Box<dyn std:
             offset: Some(0),
             length: Some(warc_data.len() as u64),
             filename: Some(Cow::Borrowed(warc_name)),
+            record_digest: None,
             extra: serde_json::Map::new(),
         },
     };
@@ -234,6 +235,7 @@ fn zipnum_index() -> Result<(), Box<dyn std::error::Error>> {
                     offset: Some(0),
                     length: Some(10),
                     filename: Some(Cow::Borrowed("data.warc.gz")),
+                    record_digest: None,
                     extra: serde_json::Map::new(),
                 },
             })

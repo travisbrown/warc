@@ -9,6 +9,7 @@ use warc::{RecordType, WarcHeader};
 use warc_archiver::client::Archiver;
 use warc_archiver::config::Config;
 use warc_wacz::cdxj;
+use warc_wacz::digest::Sha256Digest;
 use warc_wacz::reader::WaczReader;
 use warc_wacz::writer::IndexFormat;
 
@@ -183,6 +184,12 @@ fn archive_and_read_back() -> Result<(), Box<dyn std::error::Error>> {
         let offset = usize::try_from(item.fields.offset.expect("offset should be indexed"))?;
         let length = usize::try_from(item.fields.length.expect("length should be indexed"))?;
 
+        // The record digest covers exactly the framed range of stored (compressed) bytes.
+        assert_eq!(
+            item.fields.record_digest,
+            Some(Sha256Digest::compute(&warc_bytes[offset..offset + length]))
+        );
+
         let mut decompressed = Vec::new();
         gzip::Decoder::new(&warc_bytes[offset..offset + length])?.read_to_end(&mut decompressed)?;
 
@@ -242,6 +249,13 @@ fn archive_with_plain_warc_member() -> Result<(), Box<dyn std::error::Error>> {
 
     let offset = usize::try_from(items[0].fields.offset.expect("offset should be indexed"))?;
     let length = usize::try_from(items[0].fields.length.expect("length should be indexed"))?;
+
+    // The record digest covers exactly the framed range of stored (plain) bytes.
+    assert_eq!(
+        items[0].fields.record_digest,
+        Some(Sha256Digest::compute(&warc_bytes[offset..offset + length]))
+    );
+
     let framed = warc::WarcReader::new(&warc_bytes[offset..offset + length])
         .iter_records()
         .collect::<Result<Vec<_>, _>>()?;
