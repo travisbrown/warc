@@ -13,6 +13,9 @@ pub enum Error {
     MissingHeader(WarcHeader),
     /// A required header is not well-formed according to the standard.
     MalformedHeader(WarcHeader, String),
+    /// A named field other than `WARC-Concurrent-To` appeared more than once in a record. The
+    /// record was well-formed, but invalid.
+    DuplicateHeader(WarcHeader),
     /// The underlying read from the data source failed.
     ReadData(std::io::Error),
     /// More data was read than expected by the header metadata. The record was well-formed, but
@@ -33,6 +36,7 @@ impl fmt::Display for Error {
             Error::MalformedHeader(h, r) => {
                 write!(f, "Malformed header: {}: {}", h, r)
             }
+            Error::DuplicateHeader(h) => write!(f, "Duplicate header: {}", h),
             Error::ReadData(_) => write!(f, "Error reading data source."),
             Error::ReadOverflow => write!(f, "Read further than expected."),
             Error::UnexpectedEOB => write!(f, "Unexpected end of body."),

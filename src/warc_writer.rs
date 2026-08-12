@@ -1,4 +1,4 @@
-use crate::{BufferedBody, MB, RawRecordHeader, Record};
+use crate::{BufferedBody, MB, RawRecordHeader, Record, WarcHeader};
 
 use std::fs;
 use std::io;
@@ -47,6 +47,13 @@ impl<W: Write> WarcWriter<W> {
 
         for (token, value) in headers.as_ref().iter() {
             emit(token.to_string().as_bytes())?;
+            emit(b": ")?;
+            emit(value)?;
+            emit(b"\r\n")?;
+        }
+        // `WARC-Concurrent-To` may repeat: each value becomes its own header line.
+        for value in &headers.concurrent_to {
+            emit(WarcHeader::ConcurrentTo.to_string().as_bytes())?;
             emit(b": ")?;
             emit(value)?;
             emit(b"\r\n")?;
@@ -111,6 +118,7 @@ mod from_path_tests {
             ]
             .into_iter()
             .collect(),
+            concurrent_to: Vec::new(),
         }
     }
 
@@ -228,6 +236,32 @@ mod write_raw_tests {
         assert_eq!(read_back, vec![record]);
     }
 
+    /// Repeated `WARC-Concurrent-To` values are each written as their own header line and
+    /// survive a round trip through the reader.
+    #[test]
+    fn repeated_concurrent_to_round_trips() {
+        let mut record = crate::Record::with_body("payload");
+        record.add_concurrent_to("<urn:test:concurrent:record-1>");
+        record.add_concurrent_to("<urn:test:concurrent:record-2>");
+
+        let mut writer = WarcWriter::new(Vec::new());
+        writer.write(&record).unwrap();
+
+        let written = String::from_utf8(writer.writer.clone()).unwrap();
+        assert_eq!(
+            written
+                .matches("warc-concurrent-to: <urn:test:concurrent:record-")
+                .count(),
+            2
+        );
+
+        let read_back = crate::WarcReader::new(writer.writer.as_slice())
+            .iter_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(read_back, vec![record]);
+    }
+
     #[test]
     fn short_writes_do_not_truncate() {
         let headers = RawRecordHeader {
@@ -235,6 +269,7 @@ mod write_raw_tests {
             headers: vec![(WarcHeader::WarcType, b"dunno".to_vec())]
                 .into_iter()
                 .collect(),
+            concurrent_to: Vec::new(),
         };
 
         let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
