@@ -3,6 +3,8 @@
 #![allow(clippy::missing_errors_doc)]
 #![forbid(unsafe_code)]
 
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 use std::io::BufRead;
 use std::path::PathBuf;
 
@@ -16,7 +18,11 @@ fn main() -> Result<(), Error> {
     opts.verbose.init_logging()?;
 
     let urls = read_urls(std::io::stdin().lock())?;
-    let archiver = Archiver::new(Config::default())?;
+    let config = Config {
+        user_agent: USER_AGENT.into(),
+        ..Default::default()
+    };
+    let archiver = Archiver::new(config)?;
 
     // The archiver pulls URLs from the iterator one at a time as it downloads them, so advancing
     // the bar as each URL is drawn tracks the downloads themselves.
