@@ -1,16 +1,15 @@
 use nom::{
-    IResult,
+    IResult, Parser,
     bytes::streaming::{tag, take, take_while1},
     character::streaming::{line_ending, not_line_ending, space0},
     error::ErrorKind,
     multi::many1,
-    sequence::tuple,
 };
 use std::str;
 
 // TODO: evaluate the use of `ErrorKind::Verify` here.
 fn version(input: &[u8]) -> IResult<&[u8], &str> {
-    let (input, (_, version, _)) = tuple((tag("WARC/"), not_line_ending, line_ending))(input)?;
+    let (input, (_, version, _)) = (tag("WARC/"), not_line_ending, line_ending).parse(input)?;
 
     let version_str = match str::from_utf8(version) {
         Err(_) => {
@@ -49,14 +48,15 @@ fn is_header_token_char(chr: u8) -> bool {
 }
 
 fn header(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8])> {
-    let (input, (token, _, _, _, value, _)) = tuple((
+    let (input, (token, _, _, _, value, _)) = (
         take_while1(is_header_token_char),
         space0,
         tag(":"),
         space0,
         not_line_ending,
         line_ending,
-    ))(input)?;
+    )
+        .parse(input)?;
 
     Ok((input, (token, value)))
 }
@@ -66,7 +66,7 @@ fn header(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8])> {
 #[allow(clippy::type_complexity)]
 pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)> {
     let (input, version) = version(input)?;
-    let (input, headers) = many1(header)(input)?;
+    let (input, headers) = many1(header).parse(input)?;
 
     let mut content_length: Option<usize> = None;
     let mut warc_headers: Vec<(&str, &[u8])> = Vec::with_capacity(headers.len());
@@ -117,8 +117,8 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)
 /// Parse an entire WARC record.
 #[allow(clippy::type_complexity)]
 pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, &[u8])> {
-    let (input, (headers, _)) = tuple((headers, line_ending))(input)?;
-    let (input, (body, _, _)) = tuple((take(headers.2), line_ending, line_ending))(input)?;
+    let (input, (headers, _)) = (headers, line_ending).parse(input)?;
+    let (input, (body, _, _)) = (take(headers.2), line_ending, line_ending).parse(input)?;
 
     Ok((input, (headers.0, headers.1, body)))
 }
