@@ -8,9 +8,12 @@
 use std::borrow::Cow;
 use std::io::{BufRead, Write};
 
-use bounded_static::{IntoBoundedStatic, ToBoundedStatic};
+use bounded_static::{IntoBoundedStatic, ToStatic};
 use chrono::{DateTime, SecondsFormat, Utc};
 use sha2::Digest as _;
+
+use crate::ExtraProperties;
+use crate::lines::Lines;
 
 /// The format identifier required in the header line of a page list.
 pub const FORMAT: &str = "json-pages-1.0";
@@ -45,42 +48,31 @@ pub enum Error {
 }
 
 /// The header line of a page list.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+///
+/// The specification only requires the format identifier; the list identifier and title are
+/// conventional but optional.
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 pub struct PageListHeader<'a> {
     /// The format identifier (always [`FORMAT`]).
     #[serde(borrow)]
     pub format: Cow<'a, str>,
     /// An identifier for the list (`pages` for the required list).
-    #[serde(borrow)]
-    pub id: Cow<'a, str>,
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<Cow<'a, str>>,
     /// A display name for the list.
-    #[serde(borrow)]
-    pub title: Cow<'a, str>,
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub title: Option<Cow<'a, str>>,
     /// Additional properties, preserved verbatim for round-tripping.
     #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-// Implemented by hand because the `extra` map's type has no `bounded_static` support.
-impl ToBoundedStatic for PageListHeader<'_> {
-    type Static = PageListHeader<'static>;
-
-    fn to_static(&self) -> Self::Static {
-        self.clone().into_static()
-    }
-}
-
-impl IntoBoundedStatic for PageListHeader<'_> {
-    type Static = PageListHeader<'static>;
-
-    fn into_static(self) -> Self::Static {
-        PageListHeader {
-            format: self.format.into_static(),
-            id: self.id.into_static(),
-            title: self.title.into_static(),
-            extra: self.extra,
-        }
-    }
+    pub extra: ExtraProperties,
 }
 
 impl Default for PageListHeader<'static> {
@@ -88,15 +80,15 @@ impl Default for PageListHeader<'static> {
     fn default() -> Self {
         Self {
             format: Cow::Borrowed(FORMAT),
-            id: Cow::Borrowed("pages"),
-            title: Cow::Borrowed("All Pages"),
-            extra: serde_json::Map::new(),
+            id: Some(Cow::Borrowed("pages")),
+            title: Some(Cow::Borrowed("All Pages")),
+            extra: ExtraProperties::default(),
         }
     }
 }
 
 /// A single page entry in a page list.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 pub struct Page<'a> {
     /// The URL of the archived page.
     #[serde(borrow)]
@@ -129,42 +121,16 @@ pub struct Page<'a> {
     pub size: Option<u64>,
     /// Additional properties, preserved verbatim for round-tripping.
     #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-// Implemented by hand because the `extra` map's type has no `bounded_static` support.
-impl ToBoundedStatic for Page<'_> {
-    type Static = Page<'static>;
-
-    fn to_static(&self) -> Self::Static {
-        self.clone().into_static()
-    }
-}
-
-impl IntoBoundedStatic for Page<'_> {
-    type Static = Page<'static>;
-
-    fn into_static(self) -> Self::Static {
-        Page {
-            url: self.url.into_static(),
-            ts: self.ts,
-            id: self.id.into_static(),
-            title: self.title.into_static(),
-            text: self.text.into_static(),
-            size: self.size,
-            extra: self.extra,
-        }
-    }
+    pub extra: ExtraProperties,
 }
 
 /// A reader which iteratively parses page entries from a page list stream.
+///
+/// Blank lines (such as a trailing newline at the end of the file) are skipped rather than
+/// treated as invalid entries.
 pub struct PageListReader<R> {
-    underlying: R,
+    lines: Lines<R>,
     header: PageListHeader<'static>,
-    /// Scratch buffer reused across lines. Parsed pages are converted to owned values, so nothing
-    /// borrows from it once [`Iterator::next`] returns.
-    line: String,
-    line_number: usize,
 }
 
 impl<R: BufRead> PageListReader<R> {
@@ -172,32 +138,22 @@ impl<R: BufRead> PageListReader<R> {
     ///
     /// # Errors
     ///
-    /// Fails if the stream is empty, if the header line is not valid JSON, or if the header
-    /// declares a format other than [`FORMAT`].
-    pub fn new(mut reader: R) -> Result<Self, Error> {
-        let mut line = String::new();
-
-        if reader.read_line(&mut line)? == 0 {
-            return Err(Error::MissingHeader);
-        }
+    /// Fails if the stream has no non-blank lines, if the header line is not valid JSON, or if
+    /// the header declares a format other than [`FORMAT`].
+    pub fn new(reader: R) -> Result<Self, Error> {
+        let mut lines = Lines::new(reader);
+        let (_, content) = lines.next_content()?.ok_or(Error::MissingHeader)?;
 
         let header =
-            serde_json::from_str::<PageListHeader<'_>>(line.trim_end_matches(['\r', '\n']))
-                .map_err(Error::InvalidHeader)?;
+            serde_json::from_str::<PageListHeader<'_>>(content).map_err(Error::InvalidHeader)?;
 
         if header.format != FORMAT {
             return Err(Error::UnsupportedFormat(header.format.into_owned()));
         }
 
         let header = header.into_static();
-        line.clear();
 
-        Ok(Self {
-            underlying: reader,
-            header,
-            line,
-            line_number: 1,
-        })
+        Ok(Self { lines, header })
     }
 
     /// The parsed header line.
@@ -211,31 +167,14 @@ impl<R: BufRead> Iterator for PageListReader<R> {
     type Item = Result<Page<'static>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            self.line.clear();
-
-            match self.underlying.read_line(&mut self.line) {
-                Ok(0) => return None,
-                Ok(_) => {
-                    self.line_number += 1;
-                    let content = self.line.trim_end_matches(['\r', '\n']);
-
-                    // Blank lines (such as a trailing newline at the end of the file) are skipped
-                    // rather than treated as invalid entries.
-                    if content.is_empty() {
-                        continue;
-                    }
-
-                    let line_number = self.line_number;
-
-                    return Some(
-                        serde_json::from_str::<Page<'_>>(content)
-                            .map(IntoBoundedStatic::into_static)
-                            .map_err(|error| Error::InvalidEntry { error, line_number }),
-                    );
-                }
-                Err(error) => return Some(Err(Error::Io(error))),
-            }
+        match self.lines.next_content() {
+            Ok(Some((line_number, content))) => Some(
+                serde_json::from_str::<Page<'_>>(content)
+                    .map(IntoBoundedStatic::into_static)
+                    .map_err(|error| Error::InvalidEntry { error, line_number }),
+            ),
+            Ok(None) => None,
+            Err(error) => Some(Err(Error::Io(error))),
         }
     }
 }
@@ -276,6 +215,42 @@ pub fn write_page_list<'p, W: Write, I: IntoIterator<Item = &'p Page<'p>>>(
     Ok(())
 }
 
+/// A page entry paired with a synthetic identifier, serialized as the page with the identifier
+/// added (the page itself has none, so the flattened entry never collides with it).
+#[derive(serde::Serialize)]
+struct IdentifiedPage<'a> {
+    id: &'a str,
+    #[serde(flatten)]
+    page: &'a Page<'a>,
+}
+
+/// Write a page list, giving any page without an identifier a synthetic one of `id_length`
+/// characters (see [`synthetic_id`]) without copying the page.
+pub(crate) fn write_page_list_with_synthetic_ids<
+    'p,
+    W: Write,
+    I: IntoIterator<Item = &'p Page<'p>>,
+>(
+    mut writer: W,
+    header: &PageListHeader<'_>,
+    pages: I,
+    id_length: usize,
+) -> Result<(), Error> {
+    write_line(&mut writer, header)?;
+
+    for page in pages {
+        if page.id.is_some() {
+            write_line(&mut writer, page)?;
+        } else {
+            let id = synthetic_id(&page.ts, &page.url, id_length);
+
+            write_line(&mut writer, &IdentifiedPage { id: &id, page })?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Write one value as a JSON line, distinguishing stream failures from serialization failures.
 fn write_line<W: Write, T: serde::ser::Serialize>(writer: &mut W, value: &T) -> Result<(), Error> {
     serde_json::to_writer(&mut *writer, value).map_err(|error| {
@@ -306,7 +281,7 @@ mod tests {
     fn read_example_page_list() -> Result<(), Box<dyn std::error::Error>> {
         let reader = PageListReader::new(EXAMPLE.as_bytes())?;
 
-        assert_eq!(reader.header().id, "pages");
+        assert_eq!(reader.header().id.as_deref(), Some("pages"));
 
         let pages = reader.collect::<Result<Vec<_>, _>>()?;
 
@@ -315,6 +290,25 @@ mod tests {
         assert_eq!(pages[0].size, Some(1256));
         assert_eq!(pages[0].extra["custom"], serde_json::Value::Bool(true));
         assert_eq!(pages[1].id, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_rejects_empty_streams() {
+        assert!(matches!(
+            PageListReader::new(&b""[..]),
+            Err(Error::MissingHeader)
+        ));
+    }
+
+    #[test]
+    fn read_accepts_a_format_only_header() -> Result<(), Box<dyn std::error::Error>> {
+        // The specification only requires the format property in the header.
+        let reader = PageListReader::new(&b"{\"format\": \"json-pages-1.0\"}\n"[..])?;
+
+        assert_eq!(reader.header().id, None);
+        assert_eq!(reader.header().title, None);
 
         Ok(())
     }
