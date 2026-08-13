@@ -204,9 +204,36 @@ fn take_required_utf8_header(
     take_utf8_header(headers, header)?.ok_or_else(|| WarcError::MissingHeader(header.clone()))
 }
 
+/// Fold `Unknown` spellings of well-known field names in a hand-built raw header block into
+/// their variants, so that the typed extraction in `try_from` sees them; a spelling that
+/// collides with a field already present is exactly the duplicate the reader would reject.
+///
+/// Header blocks built by the parser never contain such spellings, so the rebuild only runs
+/// when an `Unknown` key is present.
+fn normalize_raw_headers(headers: &mut RawRecordHeader) -> Result<(), WarcError> {
+    let needs_normalizing = headers
+        .as_ref()
+        .keys()
+        .any(|header| matches!(header, WarcHeader::Unknown(_)));
+
+    if needs_normalizing {
+        let mut normalized = IndexMap::with_capacity(headers.as_ref().len());
+        for (header, value) in std::mem::take(headers.as_mut()) {
+            let header = header.normalized();
+            if normalized.insert(header.clone(), value).is_some() {
+                return Err(WarcError::DuplicateHeader(header));
+            }
+        }
+        *headers.as_mut() = normalized;
+    }
+
+    Ok(())
+}
+
 impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
     type Error = WarcError;
     fn try_from(mut headers: RawRecordHeader) -> Result<Self, WarcError> {
+        normalize_raw_headers(&mut headers)?;
         take_required_utf8_header(&mut headers, &WarcHeader::ContentLength)
             .and_then(|len| Self::parse_content_length(&len))?;
 
@@ -470,6 +497,7 @@ impl<T: BodyKind> Record<T> {
     // free of borrows; every variant but `Unknown` is a unit.
     #[allow(clippy::needless_pass_by_value)]
     pub fn header(&self, header: WarcHeader) -> Option<Cow<'_, str>> {
+        let header = header.normalized();
         match &header {
             WarcHeader::ContentLength => Some(Cow::Owned(self.body.content_length().to_string())),
             WarcHeader::RecordID => Some(Cow::Borrowed(self.warc_id())),
@@ -519,6 +547,7 @@ impl<T: BodyKind> Record<T> {
         V: Into<String>,
     {
         let value = value.into();
+        let header = header.normalized();
         validate_header(&header, value.as_bytes())?;
         match &header {
             WarcHeader::Date => {
@@ -1030,6 +1059,75 @@ mod record_tests {
         assert_eq!(
             stripped.header(WarcHeader::TargetURI).as_deref(),
             Some("https://example.com/")
+        );
+    }
+
+    /// An `Unknown` spelling of a well-known name is folded into its variant, so it cannot
+    /// bypass the interception that keeps derived fields out of the stored header map.
+    #[test]
+    fn set_header_normalizes_unknown_spellings() {
+        let mut record = Record::<BufferedBody>::default();
+
+        record
+            .set_header(
+                WarcHeader::Unknown("WARC-Date".to_string()),
+                "2020-07-08T02:52:55Z",
+            )
+            .unwrap();
+        assert_eq!(
+            record.header(WarcHeader::Date).unwrap(),
+            "2020-07-08T02:52:55Z"
+        );
+
+        record
+            .set_header(WarcHeader::Unknown("warc-type".to_string()), "revisit")
+            .unwrap();
+        assert_eq!(record.warc_type(), &RecordType::Revisit);
+
+        // Lookups normalize the same way, and genuinely unknown names are lower-cased.
+        assert_eq!(
+            record
+                .header(WarcHeader::Unknown("content-length".to_string()))
+                .unwrap(),
+            "0"
+        );
+        record
+            .set_header(WarcHeader::Unknown("X-Custom".to_string()), "value")
+            .unwrap();
+        assert_eq!(
+            record
+                .header(WarcHeader::Unknown("x-custom".to_string()))
+                .unwrap(),
+            "value"
+        );
+    }
+
+    /// The record serializes a single `warc-date` line, so its own reader accepts it again;
+    /// the unnormalized spelling used to produce a duplicate line the reader rejected.
+    #[test]
+    fn unknown_spelling_of_known_header_round_trips() {
+        let mut record = Record::<BufferedBody>::default();
+        record
+            .set_header(
+                WarcHeader::Unknown("WARC-Date".to_string()),
+                "2020-07-08T02:52:55Z",
+            )
+            .unwrap();
+
+        let mut writer = crate::WarcWriter::new(std::io::BufWriter::new(Vec::new()));
+        writer.write(&record).unwrap();
+        let bytes = writer.into_inner().unwrap();
+
+        let reader = crate::WarcReader::new(std::io::Cursor::new(bytes));
+        let records = reader
+            .iter_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].header(WarcHeader::Date).unwrap(),
+            "2020-07-08T02:52:55Z"
         );
     }
 
@@ -1547,6 +1645,51 @@ mod raw_tests {
         };
         headers.as_mut().insert(header, value);
         headers
+    }
+
+    /// A hand-built raw block may spell a well-known field as `Unknown`; conversion folds it
+    /// into the typed field.
+    #[test]
+    fn verify_unknown_spelling_is_normalized() {
+        let headers = RawRecordHeader {
+            version: "1.1".to_owned(),
+            headers: vec![
+                (
+                    WarcHeader::Unknown("Warc-Type".to_string()),
+                    b"dunno".to_vec(),
+                ),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (
+                    WarcHeader::RecordID,
+                    b"<urn:test:unknown-spelling:record-0>".to_vec(),
+                ),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+            ]
+            .into_iter()
+            .collect(),
+            concurrent_to: Vec::new(),
+        };
+
+        let record = Record::<EmptyBody>::try_from(headers).unwrap();
+        assert_eq!(
+            record.warc_type(),
+            &RecordType::Unknown("dunno".to_string())
+        );
+    }
+
+    /// An `Unknown` spelling that collides with a field already present is the duplicate the
+    /// reader would reject.
+    #[test]
+    fn verify_unknown_spelling_collision_is_rejected() {
+        let headers = headers_with(
+            WarcHeader::Unknown("WARC-Date".to_string()),
+            b"2021-01-01T00:00:00Z".to_vec(),
+        );
+
+        assert!(matches!(
+            Record::<EmptyBody>::try_from(headers),
+            Err(Error::DuplicateHeader(WarcHeader::Date))
+        ));
     }
 
     #[test]
