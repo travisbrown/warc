@@ -42,9 +42,7 @@ impl<W: Write> WarcWriter<W> {
         bytes_written += self.writer.write(headers.version.as_bytes())?;
         bytes_written += self.writer.write(b"\r\n")?;
 
-        let mut headers: Vec<_> = headers.as_ref().iter().collect();
-        headers.sort();
-        for (token, value) in &headers {
+        for (token, value) in headers.as_ref().iter() {
             bytes_written += self.writer.write(token.to_string().as_bytes())?;
             bytes_written += self.writer.write(b": ")?;
             bytes_written += self.writer.write(value)?;
