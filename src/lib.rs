@@ -6,6 +6,23 @@
 
 const MB: usize = 1_048_576;
 
+/// Parse a `Content-Length` value per the specification's `1*DIGIT` grammar.
+///
+/// The field grammar permits linear whitespace around the digits, so surrounding spaces and
+/// tabs are stripped; the digits themselves admit no sign, internal whitespace, or any other
+/// character. `None` also covers values beyond the unsigned 64-bit range, which could never
+/// frame a real record. Shared by the parser and the record entry points so that both accept
+/// exactly the same values.
+fn parse_content_length(value: &str) -> Option<u64> {
+    let digits = value.trim_matches([' ', '\t']);
+
+    // `parse` accepts exactly the `1*DIGIT` grammar plus an optional leading `+`, which is
+    // therefore the one deviation to reject.
+    (!digits.starts_with('+'))
+        .then(|| digits.parse().ok())
+        .flatten()
+}
+
 /// Whether a byte may appear in a header name, per the specification's token grammar: ASCII,
 /// excluding control characters, separators, and space. Shared by the parser and the
 /// write-path validation so that acceptance on write matches acceptance on read.
