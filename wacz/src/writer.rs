@@ -415,12 +415,12 @@ impl<W: Write + Seek> WaczWriter<W> {
         write(&mut writer)?;
         let (hash, bytes) = writer.finish();
 
-        self.resources.push(Resource {
-            name: Cow::Owned(file_name(path).to_owned()),
-            path: Cow::Owned(path.to_owned()),
+        self.resources.push(Resource::new(
+            file_name(path).to_owned(),
+            path.to_owned(),
             hash,
             bytes,
-        });
+        ));
 
         Ok(())
     }

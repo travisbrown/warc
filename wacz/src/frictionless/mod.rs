@@ -6,10 +6,10 @@
 //! (and optionally a cryptographic signature over it), so that a single hash comparison verifies
 //! the integrity of the entire collection.
 //!
-//! Parsing is lenient: properties beyond those modeled here are preserved in [`DataPackage::extra`]
-//! so that manifests written by other tools survive a read-modify-write cycle. The
-//! [`signature`] submodule models the digest file's signature envelope, whose parsing is
-//! strict as its specification requires.
+//! Parsing is lenient: properties beyond those modeled here are preserved in
+//! [`DataPackage::extra`] and [`Resource::extra`] so that manifests written by other tools
+//! survive a read-modify-write cycle. The [`signature`] submodule models the digest file's
+//! signature envelope, whose parsing is strict as its specification requires.
 
 use std::borrow::Cow;
 
@@ -19,7 +19,10 @@ use chrono::{DateTime, Utc};
 use crate::ExtraProperties;
 use crate::digest::Sha256Digest;
 
+pub mod resource;
 pub mod signature;
+
+pub use resource::Resource;
 
 use signature::SignatureData;
 
@@ -85,21 +88,6 @@ pub struct DataPackage<'a> {
     /// Additional properties, preserved verbatim for round-tripping.
     #[serde(flatten)]
     pub extra: ExtraProperties,
-}
-
-/// A single member of the archive as listed in the manifest.
-#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
-pub struct Resource<'a> {
-    /// The file name of the member (its path's final segment).
-    #[serde(borrow)]
-    pub name: Cow<'a, str>,
-    /// The path of the member relative to the root of the archive.
-    #[serde(borrow)]
-    pub path: Cow<'a, str>,
-    /// The SHA-256 digest of the member's contents.
-    pub hash: Sha256Digest,
-    /// The size of the member's contents in bytes.
-    pub bytes: u64,
 }
 
 /// A WACZ `datapackage-digest.json` file.
