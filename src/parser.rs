@@ -87,11 +87,13 @@ fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
 /// mandatory, but its absence is reported as `None` so the caller can raise an error naming
 /// the missing field.
 #[allow(clippy::type_complexity)]
-pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, Option<usize>)> {
+pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, Option<u64>)> {
     let (input, version) = version(input)?;
     let (input, headers) = many1(header).parse(input)?;
 
-    let mut content_length: Option<usize> = None;
+    // The specification puts no ceiling on `Content-Length`, so the full unsigned 64-bit range
+    // is accepted here; whether a record of that size can be buffered is the caller's concern.
+    let mut content_length: Option<u64> = None;
     let mut warc_headers: Vec<(&str, Cow<'_, [u8]>)> = Vec::with_capacity(headers.len());
 
     // Errors carry the offending field name rather than the remaining input, so they point at
@@ -102,7 +104,7 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
         if content_length.is_none() && token_str.eq_ignore_ascii_case("content-length") {
             let value_str = str::from_utf8(&header.1).map_err(|_| verify_error(header.0))?;
             let len = value_str
-                .parse::<usize>()
+                .parse::<u64>()
                 .map_err(|_| verify_error(header.0))?;
             content_length = Some(len);
         }
@@ -121,6 +123,9 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
 pub fn record(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>, &[u8])> {
     let (remainder, (headers, _)) = (headers, line_ending).parse(input)?;
     let content_length = headers.2.ok_or_else(|| verify_error(input))?;
+    // The body of an in-memory record must fit in a slice, so a length beyond the address
+    // space cannot possibly be satisfied by `input` and is rejected as invalid.
+    let content_length = usize::try_from(content_length).map_err(|_| verify_error(input))?;
     let (remainder, (body, _, _)) =
         (take(content_length), line_ending, line_ending).parse(remainder)?;
 
