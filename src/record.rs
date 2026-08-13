@@ -772,7 +772,7 @@ impl fmt::Display for Record<BufferedBody> {
 }
 impl fmt::Display for Record<EmptyBody> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Record({:?}, Empty)", self.headers)
+        write!(f, "Record({}, Empty)", self.to_raw_header())
     }
 }
 
@@ -952,6 +952,58 @@ mod record_tests {
     use crate::{BufferedBody, EmptyBody, Error, Record, RecordType, TruncatedType};
 
     use chrono::prelude::*;
+
+    /// `Display` for a buffered record renders the full header block — version line and
+    /// derived fields included — followed by the body bytes.
+    #[test]
+    fn display_buffered_record_renders_full_header_block() {
+        let mut record = Record::<BufferedBody>::default();
+        record.replace_body(b"hello".to_vec());
+        record
+            .set_header(WarcHeader::TargetURI, "https://example.com/")
+            .unwrap();
+
+        let rendered = record.to_string();
+
+        assert!(rendered.starts_with("Record(WARC/1.1\r\n"), "{rendered}");
+        for expected in [
+            "warc-type: resource\r\n",
+            &format!("warc-record-id: {}\r\n", record.warc_id()),
+            "warc-date: ",
+            "warc-target-uri: https://example.com/\r\n",
+            "content-length: 5\r\n",
+        ] {
+            assert!(rendered.contains(expected), "{expected:?} in {rendered}");
+        }
+        assert!(
+            rendered.ends_with(&format!("{:?})", b"hello")),
+            "{rendered}"
+        );
+    }
+
+    /// `Display` for an empty-bodied record renders the same header block, not a debug view
+    /// of the stored extra headers.
+    #[test]
+    fn display_empty_record_renders_full_header_block() {
+        let mut record = Record::<EmptyBody>::new();
+        record
+            .set_header(WarcHeader::TargetURI, "https://example.com/")
+            .unwrap();
+
+        let rendered = record.to_string();
+
+        assert!(rendered.starts_with("Record(WARC/1.1\r\n"), "{rendered}");
+        for expected in [
+            "warc-type: resource\r\n",
+            &format!("warc-record-id: {}\r\n", record.warc_id()),
+            "warc-date: ",
+            "warc-target-uri: https://example.com/\r\n",
+            "content-length: 0\r\n",
+        ] {
+            assert!(rendered.contains(expected), "{expected:?} in {rendered}");
+        }
+        assert!(rendered.ends_with(", Empty)"), "{rendered}");
+    }
 
     /// Values that would inject header lines, or end the header block early, are rejected.
     #[test]
