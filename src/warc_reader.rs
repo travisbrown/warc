@@ -1269,6 +1269,43 @@ mod next_item_tests {
         }
     }
 
+    /// The declared `Content-Length` is reported unchanged while the body is being consumed,
+    /// rather than shrinking with every read.
+    #[test]
+    fn streaming_content_length_is_stable_while_reading() {
+        use std::io::Read;
+
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:stable-length:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw));
+        let mut stream_iter = reader.stream_records();
+        let mut record = stream_iter.next_item().unwrap().unwrap();
+
+        assert_eq!(record.content_length(), 5);
+
+        let mut first_two = [0_u8; 2];
+        record.read_exact(&mut first_two).unwrap();
+        assert_eq!(&first_two, b"12");
+        assert_eq!(record.content_length(), 5);
+        assert_eq!(
+            record.header(crate::WarcHeader::ContentLength).as_deref(),
+            Some("5")
+        );
+
+        // Buffering collects the rest of the body; the unread portion is what remains.
+        let buffered = record.into_buffered().unwrap();
+        assert_eq!(buffered.body(), b"345");
+    }
+
     /// After the final `None`, further calls keep returning `None` instead of yielding a
     /// spurious error for a body the iterator already consumed.
     #[test]
