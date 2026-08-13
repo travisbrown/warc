@@ -151,6 +151,30 @@ impl AsMut<IndexMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
     }
 }
 
+/// Reject a header whose name or value would serialize to a record no reader could parse
+/// back: an unknown name outside the parser's token grammar, or a value containing the bare
+/// `\r` or `\n` that would inject header lines or terminate the block early.
+pub fn validate_header(header: &WarcHeader, value: &[u8]) -> Result<(), WarcError> {
+    if let WarcHeader::Unknown(name) = header {
+        let valid_token = !name.is_empty() && name.bytes().all(crate::is_header_token_char);
+        if !valid_token {
+            return Err(WarcError::MalformedHeader(
+                header.clone(),
+                "name is not a valid header token".to_string(),
+            ));
+        }
+    }
+
+    if value.contains(&b'\r') || value.contains(&b'\n') {
+        return Err(WarcError::MalformedHeader(
+            header.clone(),
+            "value contains a line break".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Remove `header` from the raw headers, decoding its value as UTF-8.
 fn take_utf8_header(
     headers: &mut RawRecordHeader,
@@ -478,6 +502,7 @@ impl<T: BodyKind> Record<T> {
         V: Into<String>,
     {
         let value = value.into();
+        validate_header(&header, value.as_bytes())?;
         match &header {
             WarcHeader::Date => {
                 let old_date =
@@ -926,7 +951,7 @@ fn parse_digits<T: std::str::FromStr>(value: &str) -> Option<T> {
 #[cfg(test)]
 mod record_tests {
     use crate::header::WarcHeader;
-    use crate::{BufferedBody, EmptyBody, Record, RecordType, TruncatedType};
+    use crate::{BufferedBody, EmptyBody, Error, Record, RecordType, TruncatedType};
 
     use chrono::prelude::*;
 
@@ -953,6 +978,55 @@ mod record_tests {
         assert_eq!(
             stripped.header(WarcHeader::TargetURI).as_deref(),
             Some("https://example.com/")
+        );
+    }
+
+    /// Values that would inject header lines, or end the header block early, are rejected.
+    #[test]
+    fn set_header_rejects_values_with_line_breaks() {
+        let mut record = Record::<BufferedBody>::default();
+
+        for value in ["a\r\nwarc-type: evil", "a\rb", "a\nb"] {
+            assert!(
+                matches!(
+                    record.set_header(WarcHeader::TargetURI, value),
+                    Err(Error::MalformedHeader(WarcHeader::TargetURI, _))
+                ),
+                "{value:?}"
+            );
+        }
+
+        // Headers backed by typed record fields go through the same validation.
+        assert!(matches!(
+            record.set_header(WarcHeader::RecordID, "<urn:a>\r\nevil: x"),
+            Err(Error::MalformedHeader(WarcHeader::RecordID, _))
+        ));
+        assert!(matches!(
+            record.set_header(WarcHeader::ConcurrentTo, "<urn:a>\r\nevil: x"),
+            Err(Error::MalformedHeader(WarcHeader::ConcurrentTo, _))
+        ));
+    }
+
+    /// Unknown header names outside the parser's token grammar are rejected.
+    #[test]
+    fn set_header_rejects_invalid_unknown_names() {
+        let mut record = Record::<BufferedBody>::default();
+
+        for name in ["", "evil name", "evil:name", "evil\r\nname"] {
+            let header = WarcHeader::Unknown(name.to_string());
+            assert!(
+                matches!(
+                    record.set_header(header, "value"),
+                    Err(Error::MalformedHeader(WarcHeader::Unknown(_), _))
+                ),
+                "{name:?}"
+            );
+        }
+
+        assert!(
+            record
+                .set_header(WarcHeader::Unknown("x-custom".to_string()), "value")
+                .is_ok()
         );
     }
 

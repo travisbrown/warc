@@ -42,6 +42,10 @@ pub enum Error {
     /// was read completely, but is invalid.
     #[error("Malformed record terminator.")]
     MalformedRecordTerminator,
+    /// The record's version string contains a line break, so writing it would produce a
+    /// record no reader could parse back.
+    #[error("Malformed version: {0}")]
+    MalformedVersion(String),
 }
 
 #[cfg(test)]
@@ -96,6 +100,11 @@ mod tests {
             (
                 Error::MalformedRecordTerminator,
                 "Malformed record terminator.",
+                false,
+            ),
+            (
+                Error::MalformedVersion("1.1\r\nevil".to_string()),
+                "Malformed version: 1.1\r\nevil",
                 false,
             ),
         ];
