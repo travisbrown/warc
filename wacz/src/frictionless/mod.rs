@@ -43,6 +43,23 @@ pub struct DataPackage<'a> {
     pub wacz_version: Cow<'a, str>,
     /// The members of the archive, excluding the manifest and digest files themselves.
     pub resources: Vec<Resource<'a>>,
+    /// A short, URL-usable identifier for the package.
+    ///
+    /// The Data Package specification restricts this to lowercase characters from `a-z0-9._-`;
+    /// this crate does not enforce that.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub name: Option<Cow<'a, str>>,
+    /// A globally unique identifier for the package, such as a UUID or DOI.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<Cow<'a, str>>,
     /// A short description of the collection.
     #[serde(
         default,
@@ -57,6 +74,44 @@ pub struct DataPackage<'a> {
         skip_serializing_if = "Option::is_none"
     )]
     pub description: Option<Cow<'a, str>>,
+    /// Keywords describing the package.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_str_seq",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub keywords: Vec<Cow<'a, str>>,
+    /// The URL of the package's home on the web.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub homepage: Option<Cow<'a, str>>,
+    /// A URL or relative path locating an image representing the package.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub image: Option<Cow<'a, str>>,
+    /// The version of the package; the Data Package specification recommends semantic
+    /// versioning.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub version: Option<Cow<'a, str>>,
+    /// The places the package's data originated from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<Source<'a>>,
+    /// The licenses under which the package is provided.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub licenses: Vec<License<'a>>,
+    /// The people and organizations who contributed to the package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributors: Vec<Contributor<'a>>,
     /// When the WACZ file was created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<DateTime<Utc>>,
@@ -108,6 +163,126 @@ pub struct DataPackageDigest<'a> {
     pub signed_data: Option<SignatureData<'a>>,
 }
 
+/// A place a package's or resource's data originated from.
+///
+/// The Data Package specification makes all of these properties optional.
+#[derive(Clone, Debug, Default, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
+// Every field is optional, so no `#[serde(borrow)]` field ties the deserializer's input lifetime
+// to `'a`; state the bound explicitly to allow borrowing from the input.
+#[serde(bound(deserialize = "'de: 'a"))]
+pub struct Source<'a> {
+    /// A human-readable title of the source.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub title: Option<Cow<'a, str>>,
+    /// A URL or relative path locating the source.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub path: Option<Cow<'a, str>>,
+    /// A contact email address for the source.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub email: Option<Cow<'a, str>>,
+    /// Additional properties, preserved verbatim for round-tripping.
+    #[serde(flatten)]
+    pub extra: ExtraProperties,
+}
+
+/// A license under which a package or resource is provided.
+///
+/// The Data Package specification requires at least one of `name` or `path`; this crate does
+/// not enforce that.
+#[derive(Clone, Debug, Default, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
+// Every field is optional, so no `#[serde(borrow)]` field ties the deserializer's input lifetime
+// to `'a`; state the bound explicitly to allow borrowing from the input.
+#[serde(bound(deserialize = "'de: 'a"))]
+pub struct License<'a> {
+    /// An [Open Definition license identifier](https://opendefinition.org/licenses/api/), for
+    /// example `CC-BY-4.0`.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub name: Option<Cow<'a, str>>,
+    /// A URL or relative path locating the license text.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub path: Option<Cow<'a, str>>,
+    /// A human-readable title of the license.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub title: Option<Cow<'a, str>>,
+    /// Additional properties, preserved verbatim for round-tripping.
+    #[serde(flatten)]
+    pub extra: ExtraProperties,
+}
+
+/// A person or organization who contributed to a package.
+///
+/// The Data Package specification requires `title` and restricts `role` to `author`,
+/// `publisher`, `maintainer`, `wrangler`, and `contributor` (the default); this crate does not
+/// enforce either.
+#[derive(Clone, Debug, Default, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
+// Every field is optional, so no `#[serde(borrow)]` field ties the deserializer's input lifetime
+// to `'a`; state the bound explicitly to allow borrowing from the input.
+#[serde(bound(deserialize = "'de: 'a"))]
+pub struct Contributor<'a> {
+    /// The name of the contributor.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub title: Option<Cow<'a, str>>,
+    /// A URL or relative path with more information about the contributor.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub path: Option<Cow<'a, str>>,
+    /// A contact email address for the contributor.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub email: Option<Cow<'a, str>>,
+    /// The nature of the contribution.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub role: Option<Cow<'a, str>>,
+    /// The organization the contributor belongs to.
+    #[serde(
+        default,
+        deserialize_with = "crate::attributes::borrowed_option_str",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub organization: Option<Cow<'a, str>>,
+    /// Additional properties, preserved verbatim for round-tripping.
+    #[serde(flatten)]
+    pub extra: ExtraProperties,
+}
+
 #[cfg(test)]
 mod tests {
     use bounded_static::IntoBoundedStatic;
@@ -118,7 +293,14 @@ mod tests {
     const EXAMPLE: &str = r#"{
         "profile": "data-package",
         "wacz_version": "1.1.1",
+        "name": "example-collection",
+        "id": "urn:uuid:735c0f4b-b054-4bb2-a5b6-2b4c27ba0bc7",
         "title": "Example collection",
+        "keywords": ["example", "crawl"],
+        "homepage": "https://www.example.com/collections/example",
+        "version": "1.0.0",
+        "licenses": [{"name": "CC-BY-4.0"}],
+        "contributors": [{"title": "An Archivist", "role": "author"}],
         "created": "2020-10-07T21:22:36Z",
         "mainPageUrl": "https://www.example.com/page",
         "custom": {"key": "value"},
@@ -144,7 +326,25 @@ mod tests {
 
         assert_eq!(package.profile, PROFILE);
         assert_eq!(package.wacz_version, WACZ_VERSION);
+        assert_eq!(package.name.as_deref(), Some("example-collection"));
         assert_eq!(package.title.as_deref(), Some("Example collection"));
+        assert_eq!(package.keywords, vec!["example", "crawl"]);
+        assert_eq!(package.version.as_deref(), Some("1.0.0"));
+        assert_eq!(
+            package.licenses,
+            vec![License {
+                name: Some("CC-BY-4.0".into()),
+                ..License::default()
+            }]
+        );
+        assert_eq!(
+            package.contributors,
+            vec![Contributor {
+                title: Some("An Archivist".into()),
+                role: Some("author".into()),
+                ..Contributor::default()
+            }]
+        );
         assert_eq!(
             package.main_page_url.as_deref(),
             Some("https://www.example.com/page")

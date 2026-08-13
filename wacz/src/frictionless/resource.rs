@@ -14,6 +14,8 @@ use bounded_static::ToStatic;
 use crate::ExtraProperties;
 use crate::digest::Sha256Digest;
 
+use super::{License, Source};
+
 /// A single member of the archive as listed in the manifest.
 #[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 pub struct Resource<'a> {
@@ -112,76 +114,6 @@ impl<'a> Resource<'a> {
             extra: ExtraProperties::default(),
         }
     }
-}
-
-/// A place a resource's data originated from.
-///
-/// The Data Resource specification makes all of these properties optional.
-#[derive(Clone, Debug, Default, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
-// Every field is optional, so no `#[serde(borrow)]` field ties the deserializer's input lifetime
-// to `'a`; state the bound explicitly to allow borrowing from the input.
-#[serde(bound(deserialize = "'de: 'a"))]
-pub struct Source<'a> {
-    /// A human-readable title of the source.
-    #[serde(
-        default,
-        deserialize_with = "crate::attributes::borrowed_option_str",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub title: Option<Cow<'a, str>>,
-    /// A URL or relative path locating the source.
-    #[serde(
-        default,
-        deserialize_with = "crate::attributes::borrowed_option_str",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub path: Option<Cow<'a, str>>,
-    /// A contact email address for the source.
-    #[serde(
-        default,
-        deserialize_with = "crate::attributes::borrowed_option_str",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub email: Option<Cow<'a, str>>,
-    /// Additional properties, preserved verbatim for round-tripping.
-    #[serde(flatten)]
-    pub extra: ExtraProperties,
-}
-
-/// A license under which a resource is provided.
-///
-/// The Data Resource specification requires at least one of `name` or `path`; this crate does
-/// not enforce that.
-#[derive(Clone, Debug, Default, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
-// Every field is optional, so no `#[serde(borrow)]` field ties the deserializer's input lifetime
-// to `'a`; state the bound explicitly to allow borrowing from the input.
-#[serde(bound(deserialize = "'de: 'a"))]
-pub struct License<'a> {
-    /// An [Open Definition license identifier](https://opendefinition.org/licenses/api/), for
-    /// example `CC-BY-4.0`.
-    #[serde(
-        default,
-        deserialize_with = "crate::attributes::borrowed_option_str",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub name: Option<Cow<'a, str>>,
-    /// A URL or relative path locating the license text.
-    #[serde(
-        default,
-        deserialize_with = "crate::attributes::borrowed_option_str",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub path: Option<Cow<'a, str>>,
-    /// A human-readable title of the license.
-    #[serde(
-        default,
-        deserialize_with = "crate::attributes::borrowed_option_str",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub title: Option<Cow<'a, str>>,
-    /// Additional properties, preserved verbatim for round-tripping.
-    #[serde(flatten)]
-    pub extra: ExtraProperties,
 }
 
 #[cfg(test)]
