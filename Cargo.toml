@@ -36,3 +36,17 @@ with_serde = ["serde"]
 tempfile = "3"
 # Only the `read_filtered` example parses URLs.
 url = "2"
+
+# These examples demonstrate gzip-compressed WARC files, so they are only built when the
+# feature they require is enabled; the remaining examples are still auto-discovered.
+[[example]]
+name = "read_gzip"
+required-features = ["gzip"]
+
+[[example]]
+name = "write_gzip"
+required-features = ["gzip"]
+
+[[example]]
+name = "read_filtered"
+required-features = ["gzip"]
