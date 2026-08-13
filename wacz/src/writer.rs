@@ -18,8 +18,8 @@ use crate::digest::Sha256Digest;
 use crate::frictionless::{DataPackage, DataPackageDigest, PROFILE, Resource, WACZ_VERSION};
 use crate::pages::{self, Page, PageListHeader};
 use crate::{
-    ARCHIVE_PREFIX, DATA_PACKAGE_DIGEST_PATH, DATA_PACKAGE_PATH, GZIP_EXTENSION, INDEXES_PREFIX,
-    PAGES_PREFIX,
+    ARCHIVE_PREFIX, DATA_PACKAGE_DIGEST_PATH, DATA_PACKAGE_PATH, ExtraProperties, GZIP_EXTENSION,
+    INDEXES_PREFIX, PAGES_PREFIX,
 };
 
 /// The default `software` manifest property written by this crate.
@@ -98,6 +98,14 @@ pub enum Error {
     /// A file to be added under `archive/` does not have a usable UTF-8 file name.
     #[error("invalid WARC file name: {}", .0.display())]
     InvalidFileName(PathBuf),
+    /// A member path contains backslashes or empty, `.`, or `..` segments (which covers
+    /// absolute and directory paths).
+    #[error("invalid member path: {0}")]
+    InvalidMemberPath(String),
+    /// A member path repeats an already-written member or collides with the manifest members
+    /// written by [`WaczWriter::finish`].
+    #[error("duplicate member path: {0}")]
+    DuplicateMemberPath(String),
 }
 
 /// The contextual manifest properties written by [`WaczWriter::finish`].
@@ -194,41 +202,35 @@ impl<W: Write + Seek> WaczWriter<W> {
     /// With [`IndexFormat::Plain`], a single plain-text member is written with that name. With
     /// [`IndexFormat::ZipNum`], a `{name}.gz` data member and an `.idx` summary member (named
     /// by replacing a `.cdx` suffix, so conventionally `index.idx`) are written following the
-    /// `py-wacz` layout; the lines are additionally deduplicated, as `py-wacz` does.
+    /// `py-wacz` layout.
     pub fn add_index<'a, I: IntoIterator<Item = &'a cdxj::Item<'a>>>(
         &mut self,
         name: &str,
         items: I,
     ) -> Result<(), Error> {
-        let mut items = items.into_iter().collect::<Vec<_>>();
+        // py-wacz sorts and deduplicates the rendered lines themselves, which orders items by
+        // key and then timestamp; both formats share the behavior so that identical input
+        // produces an identically-ordered index either way.
+        let mut rendered = items
+            .into_iter()
+            .map(|item| format!("{item}\n"))
+            .collect::<Vec<_>>();
+        rendered.sort_unstable();
+        rendered.dedup();
 
         match self.config.index_format {
             IndexFormat::Plain => {
-                items.sort_unstable_by(|a, b| {
-                    a.key
-                        .cmp(&b.key)
-                        .then_with(|| a.timestamp.cmp(&b.timestamp))
-                });
+                let path = format!("{INDEXES_PREFIX}{name}");
 
-                self.add_member(&format!("{INDEXES_PREFIX}{name}"), deflated(), |writer| {
-                    for item in items {
-                        writeln!(writer, "{item}")?;
+                self.add_member(&path, options_for(&path), |writer| {
+                    for line in &rendered {
+                        writer.write_all(line.as_bytes())?;
                     }
 
                     Ok(())
                 })
             }
-            IndexFormat::ZipNum { lines } => {
-                // py-wacz sorts and deduplicates the rendered lines themselves.
-                let mut rendered = items
-                    .iter()
-                    .map(|item| format!("{item}\n"))
-                    .collect::<Vec<_>>();
-                rendered.sort_unstable();
-                rendered.dedup();
-
-                self.add_zipnum_index(name, &rendered, lines)
-            }
+            IndexFormat::ZipNum { lines } => self.add_zipnum_index(name, &rendered, lines),
         }
     }
 
@@ -243,20 +245,24 @@ impl<W: Write + Seek> WaczWriter<W> {
         let data_name = format!("{name}{GZIP_EXTENSION}");
         let idx_name = format!("{}.idx", name.strip_suffix(".cdx").unwrap_or(name));
         let data_path = format!("{INDEXES_PREFIX}{data_name}");
+        let idx_path = format!("{INDEXES_PREFIX}{idx_name}");
+
+        // The file name is JSON-escaped into the header line; serializing a string to a
+        // `String` cannot fail.
+        let escaped_data_name =
+            serde_json::to_string(&data_name).expect("string serialization cannot fail");
 
         let mut summary = String::new();
+        writeln!(
+            summary,
+            "!meta 0 {{\"format\": \"{ZIPNUM_FORMAT}\", \"filename\": {escaped_data_name}}}"
+        )
+        .expect("writing to a String cannot fail");
+
         self.add_member(&data_path, options_for(&data_path), |writer| {
             let mut offset: u64 = 0;
 
             for block in rendered.chunks(lines.max(1)) {
-                if offset == 0 {
-                    writeln!(
-                        summary,
-                        "!meta 0 {{\"format\": \"{ZIPNUM_FORMAT}\", \"filename\": \"{data_name}\"}}"
-                    )
-                    .expect("writing to a String cannot fail");
-                }
-
                 let mut encoder = gzip::Encoder::new(Vec::new())?;
                 for line in block {
                     encoder.write_all(line.as_bytes())?;
@@ -265,10 +271,10 @@ impl<W: Write + Seek> WaczWriter<W> {
 
                 let length = compressed.len();
                 let digest = Sha256Digest::compute(&compressed);
-                let prefix = block[0].split('{').next().unwrap_or("").trim();
                 writeln!(
                     summary,
-                    "{prefix} {{\"offset\": {offset}, \"length\": {length}, \"digest\": \"{digest}\"}}"
+                    "{} {{\"offset\": {offset}, \"length\": {length}, \"digest\": \"{digest}\"}}",
+                    line_prefix(&block[0])
                 )
                 .expect("writing to a String cannot fail");
 
@@ -276,18 +282,21 @@ impl<W: Write + Seek> WaczWriter<W> {
                 offset += length as u64;
             }
 
+            if offset == 0 {
+                // An empty index still needs its data member to hold a valid (empty) gzip
+                // stream, so that readers can decode the member.
+                let compressed = gzip::Encoder::new(Vec::new())?.finish().into_result()?;
+                writer.write_all(&compressed)?;
+            }
+
             Ok(())
         })?;
 
-        self.add_member(
-            &format!("{INDEXES_PREFIX}{idx_name}"),
-            deflated(),
-            |writer| {
-                writer.write_all(summary.as_bytes())?;
+        self.add_member(&idx_path, options_for(&idx_path), |writer| {
+            writer.write_all(summary.as_bytes())?;
 
-                Ok(())
-            },
-        )
+            Ok(())
+        })
     }
 
     /// Write the required page list at `pages/pages.jsonl`.
@@ -316,26 +325,11 @@ impl<W: Write + Seek> WaczWriter<W> {
         pages: I,
     ) -> Result<(), Error> {
         let id_length = self.config.page_id_length;
-        let pages = pages
-            .into_iter()
-            .map(|page| {
-                if page.id.is_some() {
-                    Cow::Borrowed(page)
-                } else {
-                    let mut page = page.clone();
-                    page.id = Some(Cow::Owned(pages::synthetic_id(
-                        &page.ts, &page.url, id_length,
-                    )));
-                    Cow::Owned(page)
-                }
-            })
-            .collect::<Vec<_>>();
+        let path = format!("{PAGES_PREFIX}{name}");
 
-        self.add_member(&format!("{PAGES_PREFIX}{name}"), deflated(), |writer| {
-            Ok(pages::write_page_list(
-                writer,
-                header,
-                pages.iter().map(Cow::as_ref),
+        self.add_member(&path, options_for(&path), |writer| {
+            Ok(pages::write_page_list_with_synthetic_ids(
+                writer, header, pages, id_length,
             )?)
         })
     }
@@ -379,11 +373,11 @@ impl<W: Write + Seek> WaczWriter<W> {
             ),
             main_page_url: metadata.main_page_url.map(Cow::Owned),
             main_page_date: metadata.main_page_date,
-            extra: serde_json::Map::new(),
+            extra: ExtraProperties::default(),
         };
 
         let manifest = serde_json::to_vec_pretty(&package).map_err(Error::Manifest)?;
-        zip.start_file(DATA_PACKAGE_PATH, deflated())?;
+        zip.start_file(DATA_PACKAGE_PATH, options_for(DATA_PACKAGE_PATH))?;
         zip.write_all(&manifest)?;
 
         let digest = DataPackageDigest {
@@ -393,7 +387,10 @@ impl<W: Write + Seek> WaczWriter<W> {
         };
 
         let digest_bytes = serde_json::to_vec_pretty(&digest).map_err(Error::Manifest)?;
-        zip.start_file(DATA_PACKAGE_DIGEST_PATH, deflated())?;
+        zip.start_file(
+            DATA_PACKAGE_DIGEST_PATH,
+            options_for(DATA_PACKAGE_DIGEST_PATH),
+        )?;
         zip.write_all(&digest_bytes)?;
 
         Ok(zip.finish()?)
@@ -411,6 +408,7 @@ impl<W: Write + Seek> WaczWriter<W> {
     where
         F: FnOnce(&mut HashingWriter<&mut ZipWriter<W>>) -> Result<(), Error>,
     {
+        self.validate_path(path)?;
         self.zip.start_file(path, options)?;
 
         let mut writer = HashingWriter::new(&mut self.zip);
@@ -423,6 +421,30 @@ impl<W: Write + Seek> WaczWriter<W> {
             hash,
             bytes,
         });
+
+        Ok(())
+    }
+
+    /// Check that a member path is safely relative and not yet taken.
+    ///
+    /// Backslashes and empty, `.`, or `..` segments are rejected; the empty-segment check also
+    /// covers the empty path, absolute paths (whose leading slash yields an empty first
+    /// segment), and directory paths (whose trailing slash yields an empty last segment).
+    fn validate_path(&self, path: &str) -> Result<(), Error> {
+        if path.contains('\\')
+            || path
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        {
+            return Err(Error::InvalidMemberPath(path.to_owned()));
+        }
+
+        if path == DATA_PACKAGE_PATH
+            || path == DATA_PACKAGE_DIGEST_PATH
+            || self.resources.iter().any(|resource| resource.path == path)
+        {
+            return Err(Error::DuplicateMemberPath(path.to_owned()));
+        }
 
         Ok(())
     }
@@ -470,20 +492,26 @@ impl<W: Write> Write for HashingWriter<W> {
 /// anywhere (already-compressed data must not be compressed again); only plain-text members
 /// may use `DEFLATE`.
 fn options_for(path: &str) -> SimpleFileOptions {
-    if path.starts_with(ARCHIVE_PREFIX) || path.ends_with(GZIP_EXTENSION) {
-        // `large_file` permits members over the ZIP64 threshold, at a cost of a few bytes of
-        // header overhead per member.
-        SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Stored)
-            .large_file(true)
+    let method = if path.starts_with(ARCHIVE_PREFIX) || path.ends_with(GZIP_EXTENSION) {
+        CompressionMethod::Stored
     } else {
-        deflated().large_file(true)
-    }
+        CompressionMethod::Deflated
+    };
+
+    // `large_file` permits members over the ZIP64 threshold, at a cost of a few bytes of
+    // header overhead per member.
+    SimpleFileOptions::default()
+        .compression_method(method)
+        .large_file(true)
 }
 
-/// The ZIP entry options for DEFLATE-compressed members.
-fn deflated() -> SimpleFileOptions {
-    SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)
+/// The prefix of a rendered CDX line locating a `ZipNum` block: its search key and timestamp,
+/// i.e. everything before the third space-separated field (the JSON block, which may itself
+/// contain spaces or braces, as may a search key holding a `{` from a query string).
+fn line_prefix(line: &str) -> &str {
+    line.match_indices(' ')
+        .nth(1)
+        .map_or_else(|| line.trim_end(), |(index, _)| &line[..index])
 }
 
 /// The final segment of a member path, used as the resource name in the manifest.

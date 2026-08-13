@@ -11,10 +11,14 @@ use std::fmt;
 use std::io::BufRead;
 use std::str::FromStr;
 
-use bounded_static::{IntoBoundedStatic, ToBoundedStatic, ToStatic};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use bounded_static::{IntoBoundedStatic, ToStatic};
+// `SubsecRound` provides `trunc_subsecs`; the anonymous import brings the method into scope
+// without adding a name (a Rust idiom for trait methods, similar to a Python mixin).
+use chrono::{DateTime, NaiveDateTime, SubsecRound as _, Utc};
 
+use crate::ExtraProperties;
 use crate::digest::Sha256Digest;
+use crate::lines::Lines;
 
 /// The timestamp format used in CDXJ lines.
 const TIMESTAMP_FORMAT: &str = "%Y%m%d%H%M%S";
@@ -43,12 +47,26 @@ pub enum Error {
 }
 
 /// A 14-digit CDX timestamp (`YYYYmmddHHMMSS`, always UTC).
+///
+/// Values are truncated to whole-second precision on construction, since the encoding cannot
+/// represent fractional seconds; equality and ordering therefore always agree with the encoded
+/// form.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, ToStatic)]
-pub struct Timestamp(
-    /// The underlying instant. Values are truncated to second precision on parsing and
-    /// formatting, since the encoding cannot represent fractional seconds.
-    pub DateTime<Utc>,
-);
+pub struct Timestamp(DateTime<Utc>);
+
+impl Timestamp {
+    /// Create a timestamp, truncating the instant to whole-second precision.
+    #[must_use]
+    pub fn new(instant: DateTime<Utc>) -> Self {
+        Self(instant.trunc_subsecs(0))
+    }
+
+    /// The underlying instant.
+    #[must_use]
+    pub const fn datetime(self) -> DateTime<Utc> {
+        self.0
+    }
+}
 
 impl fmt::Display for Timestamp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -74,7 +92,7 @@ impl FromStr for Timestamp {
 
 impl From<DateTime<Utc>> for Timestamp {
     fn from(value: DateTime<Utc>) -> Self {
-        Self(value)
+        Self::new(value)
     }
 }
 
@@ -126,7 +144,7 @@ impl fmt::Display for Item<'_> {
 ///
 /// The numeric fields are written as decimal strings, following the convention of pywb-family
 /// indexers, but are accepted as either strings or JSON numbers on parsing.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 pub struct Fields<'a> {
     /// The original URL of the capture.
     #[serde(borrow)]
@@ -187,42 +205,15 @@ pub struct Fields<'a> {
     pub record_digest: Option<Sha256Digest>,
     /// Additional properties, preserved verbatim for round-tripping.
     #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-// Implemented by hand because the `extra` map's type has no `bounded_static` support.
-impl ToBoundedStatic for Fields<'_> {
-    type Static = Fields<'static>;
-
-    fn to_static(&self) -> Self::Static {
-        self.clone().into_static()
-    }
-}
-
-impl IntoBoundedStatic for Fields<'_> {
-    type Static = Fields<'static>;
-
-    fn into_static(self) -> Self::Static {
-        Fields {
-            url: self.url.into_static(),
-            digest: self.digest.into_static(),
-            mime: self.mime.into_static(),
-            status: self.status,
-            offset: self.offset,
-            length: self.length,
-            filename: self.filename.into_static(),
-            record_digest: self.record_digest,
-            extra: self.extra,
-        }
-    }
+    pub extra: ExtraProperties,
 }
 
 /// A reader which iteratively parses CDXJ items from a stream.
+///
+/// Blank lines (such as a trailing newline at the end of the file) are skipped rather than
+/// treated as invalid items.
 pub struct IndexReader<R> {
-    underlying: R,
-    /// Scratch buffer reused across lines. Parsed items are converted to owned values, so nothing
-    /// borrows from it once [`Iterator::next`] returns.
-    line: String,
+    lines: Lines<R>,
 }
 
 impl<R: BufRead> IndexReader<R> {
@@ -230,8 +221,7 @@ impl<R: BufRead> IndexReader<R> {
     #[must_use]
     pub const fn new(reader: R) -> Self {
         Self {
-            underlying: reader,
-            line: String::new(),
+            lines: Lines::new(reader),
         }
     }
 }
@@ -240,33 +230,23 @@ impl<R: BufRead> Iterator for IndexReader<R> {
     type Item = Result<Item<'static>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            self.line.clear();
-
-            match self.underlying.read_line(&mut self.line) {
-                Ok(0) => return None,
-                Ok(_) => {
-                    let content = self.line.trim_end_matches(['\r', '\n']);
-
-                    // Blank lines (such as a trailing newline at the end of the file) are skipped
-                    // rather than treated as invalid items.
-                    if content.is_empty() {
-                        continue;
-                    }
-
-                    return Some(Item::parse(content).map(IntoBoundedStatic::into_static));
-                }
-                Err(error) => return Some(Err(Error::Io(error))),
+        match self.lines.next_content() {
+            Ok(Some((_, content))) => {
+                Some(Item::parse(content).map(IntoBoundedStatic::into_static))
             }
+            Ok(None) => None,
+            Err(error) => Some(Err(Error::Io(error))),
         }
     }
 }
 
 /// Transform a URL into a searchable key compatible with pywb's default canonicalization.
 ///
-/// The host is lowercased, its labels are reversed and joined with commas, and any non-default
-/// port is kept. The path and query are lowercased, and query parameters are sorted so that
-/// lookups are insensitive to parameter order. The fragment is dropped.
+/// The host is lowercased, its labels are reversed and joined with commas (with any single
+/// trailing dot dropped, so that `example.com.` and `example.com` share a key), and any
+/// non-default port is kept. IP address hosts keep their usual order, following the SURT
+/// convention. The path and query are lowercased, and query parameters are sorted so that
+/// lookups are insensitive to parameter order. Userinfo and the fragment are dropped.
 ///
 /// # Errors
 ///
@@ -279,12 +259,19 @@ pub fn search_key(url: &str) -> Result<String, Error> {
 
     let mut key = String::with_capacity(url.len());
 
-    for (i, label) in host.split('.').rev().enumerate() {
-        if i > 0 {
-            key.push(',');
-        }
+    if let Some(url::Host::Domain(domain)) = parsed.host() {
+        let domain = domain.strip_suffix('.').unwrap_or(domain);
 
-        key.push_str(label);
+        for (i, label) in domain.split('.').rev().enumerate() {
+            if i > 0 {
+                key.push(',');
+            }
+
+            key.push_str(label);
+        }
+    } else {
+        // An IP address host (`host_str` keeps the brackets of an IPv6 address).
+        key.push_str(host);
     }
 
     // `Url::port` is `None` when the port is the default for the scheme.
@@ -367,10 +354,57 @@ mod tests {
 
     #[test]
     fn parse_rejects_invalid_timestamps() {
-        assert!(matches!(
-            Item::parse("com,example)/ 2020100721223 {\"url\": \"https://example.com/\"}"),
-            Err(Error::InvalidTimestamp(_))
-        ));
+        // Too short, and the right length with a non-digit.
+        for timestamp in ["2020100721223", "2020100721223a"] {
+            assert!(matches!(
+                Item::parse(&format!(
+                    "com,example)/ {timestamp} {{\"url\": \"https://example.com/\"}}"
+                )),
+                Err(Error::InvalidTimestamp(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn parse_accepts_null_optional_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let item = Item::parse(
+            "com,example)/ 20201007212236 {\"url\": \"https://example.com/\", \
+             \"digest\": null, \"mime\": null, \"status\": null, \"offset\": null}",
+        )?;
+
+        assert_eq!(item.fields.digest, None);
+        assert_eq!(item.fields.mime, None);
+        assert_eq!(item.fields.status, None);
+        assert_eq!(item.fields.offset, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn record_digest_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        // Compact JSON, exactly as `Display` renders it, so the round trip is byte-identical.
+        let line = concat!(
+            "com,example)/ 20201007212236 {\"url\":\"https://example.com/\",\"recordDigest\":",
+            "\"sha256:3ac6b4f7bda57f4bd0d9ce4ecb1e0ec6ee4b0ff3a7ae5b25e5ff89d1e46ec0cf\"}",
+        );
+        let item = Item::parse(line)?;
+
+        assert!(item.fields.record_digest.is_some());
+        assert_eq!(item.to_string(), line);
+
+        Ok(())
+    }
+
+    #[test]
+    fn timestamp_truncates_fractional_seconds() -> Result<(), Box<dyn std::error::Error>> {
+        let instant = DateTime::parse_from_rfc3339("2020-10-07T21:22:36.750Z")?.to_utc();
+        let timestamp = Timestamp::from(instant);
+
+        // The encoded form cannot represent the fraction, so equality follows the whole second.
+        assert_eq!(timestamp, timestamp.to_string().parse()?);
+        assert_eq!(timestamp.datetime().timestamp_subsec_nanos(), 0);
+
+        Ok(())
     }
 
     #[test]
@@ -411,6 +445,37 @@ mod tests {
             "com,example:8080)/"
         );
         assert_eq!(search_key("https://example.com:443/")?, "com,example)/");
+
+        Ok(())
+    }
+
+    #[test]
+    fn search_key_drops_trailing_host_dots_and_userinfo() -> Result<(), Box<dyn std::error::Error>>
+    {
+        assert_eq!(search_key("https://example.com./x")?, "com,example)/x");
+        assert_eq!(
+            search_key("https://user:pass@example.com/")?,
+            "com,example)/"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn search_key_keeps_ip_hosts_in_order() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(search_key("http://127.0.0.1:8080/a")?, "127.0.0.1:8080)/a");
+        assert_eq!(search_key("http://[2001:db8::1]/")?, "[2001:db8::1])/");
+
+        Ok(())
+    }
+
+    #[test]
+    fn search_key_keeps_braces_in_queries() -> Result<(), Box<dyn std::error::Error>> {
+        // `{` is legal unencoded in a query string and must survive into the key.
+        assert_eq!(
+            search_key("https://example.com/?a={b}")?,
+            "com,example)/?a={b}"
+        );
 
         Ok(())
     }

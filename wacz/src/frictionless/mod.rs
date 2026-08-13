@@ -13,9 +13,10 @@
 
 use std::borrow::Cow;
 
-use bounded_static::{IntoBoundedStatic, ToBoundedStatic, ToStatic};
+use bounded_static::ToStatic;
 use chrono::{DateTime, Utc};
 
+use crate::ExtraProperties;
 use crate::digest::Sha256Digest;
 
 pub mod signature;
@@ -29,7 +30,7 @@ pub const PROFILE: &str = "data-package";
 pub const WACZ_VERSION: &str = "1.1.1";
 
 /// A WACZ `datapackage.json` manifest.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, ToStatic, serde::Deserialize, serde::Serialize)]
 pub struct DataPackage<'a> {
     /// The data package profile identifier (always [`PROFILE`] for WACZ files).
     #[serde(borrow)]
@@ -83,36 +84,7 @@ pub struct DataPackage<'a> {
     pub main_page_date: Option<DateTime<Utc>>,
     /// Additional properties, preserved verbatim for round-tripping.
     #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-// Implemented by hand because the `extra` map's type has no `bounded_static` support.
-impl ToBoundedStatic for DataPackage<'_> {
-    type Static = DataPackage<'static>;
-
-    fn to_static(&self) -> Self::Static {
-        self.clone().into_static()
-    }
-}
-
-impl IntoBoundedStatic for DataPackage<'_> {
-    type Static = DataPackage<'static>;
-
-    fn into_static(self) -> Self::Static {
-        DataPackage {
-            profile: self.profile.into_static(),
-            wacz_version: self.wacz_version.into_static(),
-            resources: self.resources.into_static(),
-            title: self.title.into_static(),
-            description: self.description.into_static(),
-            created: self.created,
-            modified: self.modified,
-            software: self.software.into_static(),
-            main_page_url: self.main_page_url.into_static(),
-            main_page_date: self.main_page_date,
-            extra: self.extra,
-        }
-    }
+    pub extra: ExtraProperties,
 }
 
 /// A single member of the archive as listed in the manifest.
@@ -150,6 +122,8 @@ pub struct DataPackageDigest<'a> {
 
 #[cfg(test)]
 mod tests {
+    use bounded_static::IntoBoundedStatic;
+
     use super::*;
 
     /// The example manifest from the WACZ 1.1.1 specification, with contextual properties added.

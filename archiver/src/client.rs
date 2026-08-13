@@ -17,6 +17,7 @@ use reqwest::redirect::Policy;
 use sha2::Digest as _;
 use url::Url;
 use warc::{BufferedBody, Record, RecordBuilder, RecordType, WarcHeader, WarcWriter};
+use warc_wacz::ExtraProperties;
 use warc_wacz::cdxj;
 use warc_wacz::digest::Sha256Digest;
 use warc_wacz::pages::{Page, PageListHeader};
@@ -192,7 +193,7 @@ impl Collection {
                 title: None,
                 text: None,
                 size: Some(size),
-                extra: serde_json::Map::new(),
+                extra: ExtraProperties::default(),
             });
 
             self.summary.captures.push(CaptureSummary {
@@ -693,7 +694,7 @@ fn write_exchange<W: Write>(
             length: Some(response_length),
             filename: Some(Cow::Borrowed(warc_name)),
             record_digest: Some(response_digest),
-            extra: serde_json::Map::new(),
+            extra: ExtraProperties::default(),
         },
     };
 

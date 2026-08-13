@@ -93,9 +93,7 @@ impl<R: Read + Seek> WaczReader<R> {
     pub fn data_package(&mut self) -> Result<DataPackage<'static>, Error> {
         let bytes = self.member_bytes(DATA_PACKAGE_PATH)?;
 
-        serde_json::from_slice::<DataPackage<'_>>(&bytes)
-            .map(IntoBoundedStatic::into_static)
-            .map_err(Error::InvalidDataPackage)
+        Ok(parse_data_package(&bytes)?.into_static())
     }
 
     /// Read and parse the `datapackage-digest.json` file.
@@ -125,16 +123,19 @@ impl<R: Read + Seek> WaczReader<R> {
 
     /// The paths of the WARC members of the archive, in unspecified order.
     pub fn warc_paths(&self) -> impl Iterator<Item = &str> {
-        self.archive
-            .file_names()
-            .filter(|name| name.starts_with(ARCHIVE_PREFIX))
+        self.member_paths(ARCHIVE_PREFIX)
     }
 
     /// The paths of the index members of the archive, in unspecified order.
     pub fn index_paths(&self) -> impl Iterator<Item = &str> {
+        self.member_paths(INDEXES_PREFIX)
+    }
+
+    /// The file members under a directory prefix, excluding ZIP directory entries.
+    fn member_paths<'s>(&'s self, prefix: &'s str) -> impl Iterator<Item = &'s str> {
         self.archive
             .file_names()
-            .filter(|name| name.starts_with(INDEXES_PREFIX))
+            .filter(move |name| name.starts_with(prefix) && !name.ends_with('/'))
     }
 
     /// Read a CDXJ index member by path, decoding gzip members by extension.
@@ -150,38 +151,47 @@ impl<R: Read + Seek> WaczReader<R> {
     /// Verify the members of the archive against the manifest, and the manifest against the
     /// digest file if one is present.
     ///
-    /// Missing or corrupt members are reported in the result rather than treated as errors.
+    /// Missing, corrupt, and mismatched members are reported in the result rather than treated
+    /// as errors, as is a digest file that cannot be parsed or that does not name the
+    /// manifest.
     pub fn verify(&mut self) -> Result<Verification, Error> {
         let manifest_bytes = self.member_bytes(DATA_PACKAGE_PATH)?;
-        let package = serde_json::from_slice::<DataPackage<'_>>(&manifest_bytes)
-            .map(IntoBoundedStatic::into_static)
-            .map_err(Error::InvalidDataPackage)?;
+        let package = parse_data_package(&manifest_bytes)?;
 
         let mut verification = Verification::default();
 
-        if let Some(digest) = self.data_package_digest()? {
-            if digest.hash == Sha256Digest::compute(&manifest_bytes) {
-                verification.verified.push(DATA_PACKAGE_PATH.to_owned());
-            } else {
+        match self.data_package_digest() {
+            Ok(Some(digest)) => {
+                if digest.path == DATA_PACKAGE_PATH
+                    && digest.hash == Sha256Digest::compute(&manifest_bytes)
+                {
+                    verification.verified.push(DATA_PACKAGE_PATH.to_owned());
+                } else {
+                    verification.mismatched.push(DATA_PACKAGE_PATH.to_owned());
+                }
+            }
+            Ok(None) => {}
+            // A digest file that cannot be parsed cannot corroborate the manifest.
+            Err(Error::InvalidDataPackageDigest(_)) => {
                 verification.mismatched.push(DATA_PACKAGE_PATH.to_owned());
             }
+            Err(error) => return Err(error),
         }
 
         for resource in &package.resources {
             match self.member(&resource.path) {
-                Ok(member) => {
-                    let (hash, bytes) = Sha256Digest::from_reader(member)?;
-
-                    if hash == resource.hash && bytes == resource.bytes {
-                        verification
-                            .verified
-                            .push(resource.path.clone().into_owned());
-                    } else {
-                        verification
-                            .mismatched
-                            .push(resource.path.clone().into_owned());
+                Ok(member) => match Sha256Digest::from_reader(member) {
+                    Ok((hash, bytes)) if hash == resource.hash && bytes == resource.bytes => {
+                        verification.verified.push(resource.path.to_string());
                     }
-                }
+                    Ok(_) => verification.mismatched.push(resource.path.to_string()),
+                    // The ZIP layer reports a corrupt member (a CRC or decompression failure)
+                    // as `InvalidData` once the stream has been read to its end.
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                        verification.mismatched.push(resource.path.to_string());
+                    }
+                    Err(error) => return Err(error.into()),
+                },
                 Err(Error::MissingMember(path)) => verification.missing.push(path),
                 Err(error) => return Err(error),
             }
@@ -203,8 +213,10 @@ impl<R: Read + Seek> WaczReader<R> {
         let is_gzip = path.ends_with(GZIP_EXTENSION);
         let member = self.member(path)?;
 
+        // The buffering lives on the decoded side (the `BufReader` below); the compressed side
+        // reads from the archive's own reader, which is buffered when opened from a path.
         let stream: Box<dyn Read + '_> = if is_gzip {
-            Box::new(MultiDecoder::new(BufReader::new(member))?)
+            Box::new(MultiDecoder::new(member)?)
         } else {
             Box::new(member)
         };
@@ -215,9 +227,21 @@ impl<R: Read + Seek> WaczReader<R> {
     /// Read the full contents of a member by path.
     fn member_bytes(&mut self, path: &str) -> Result<Vec<u8>, Error> {
         let mut member = self.member(path)?;
-        let mut bytes = Vec::with_capacity(usize::try_from(member.size()).unwrap_or(0));
+        // The declared size is untrusted input, so the preallocation it drives is capped.
+        let capacity = usize::try_from(member.size())
+            .unwrap_or(usize::MAX)
+            .min(MAX_PREALLOCATION);
+        let mut bytes = Vec::with_capacity(capacity);
         member.read_to_end(&mut bytes)?;
 
         Ok(bytes)
     }
+}
+
+/// The maximum bytes preallocated from a member's declared (untrusted) size.
+const MAX_PREALLOCATION: usize = 1 << 20;
+
+/// Parse manifest bytes, mapping parse failures to the dedicated variant.
+fn parse_data_package(bytes: &[u8]) -> Result<DataPackage<'_>, Error> {
+    serde_json::from_slice(bytes).map_err(Error::InvalidDataPackage)
 }

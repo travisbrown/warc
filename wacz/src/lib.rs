@@ -27,9 +27,55 @@ mod attributes;
 pub mod cdxj;
 pub mod digest;
 pub mod frictionless;
+mod lines;
 pub mod pages;
 pub mod reader;
 pub mod writer;
+
+/// Additional JSON properties preserved verbatim for round-tripping.
+///
+/// A newtype over [`serde_json::Map`] which exists only to give the map type (which holds no
+/// borrowed data, but also has no implementation of its own) the `bounded_static` traits, so
+/// that the structs holding it can derive them. It dereferences to the underlying map.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct ExtraProperties(serde_json::Map<String, serde_json::Value>);
+
+impl bounded_static::ToBoundedStatic for ExtraProperties {
+    type Static = Self;
+
+    fn to_static(&self) -> Self {
+        self.clone()
+    }
+}
+
+impl bounded_static::IntoBoundedStatic for ExtraProperties {
+    type Static = Self;
+
+    fn into_static(self) -> Self {
+        self
+    }
+}
+
+impl From<serde_json::Map<String, serde_json::Value>> for ExtraProperties {
+    fn from(map: serde_json::Map<String, serde_json::Value>) -> Self {
+        Self(map)
+    }
+}
+
+impl std::ops::Deref for ExtraProperties {
+    type Target = serde_json::Map<String, serde_json::Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ExtraProperties {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// The path of the data package manifest within a WACZ file.
 pub const DATA_PACKAGE_PATH: &str = "datapackage.json";
