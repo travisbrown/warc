@@ -220,6 +220,7 @@ impl Clone for RecordBuilder {
             WarcError::MalformedHeader(h, e) => WarcError::MalformedHeader(h.clone(), e.clone()),
             WarcError::DuplicateHeader(h) => WarcError::DuplicateHeader(h.clone()),
             WarcError::ReadOverflow => WarcError::ReadOverflow,
+            WarcError::BodyTooLarge => WarcError::BodyTooLarge,
             WarcError::UnexpectedEOB => WarcError::UnexpectedEOB,
             WarcError::MalformedRecordTerminator => WarcError::MalformedRecordTerminator,
         });
