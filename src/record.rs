@@ -974,6 +974,32 @@ mod record_tests {
 
     use chrono::prelude::*;
 
+    /// Stripping the body keeps every other field of the record and zeroes its length.
+    #[test]
+    fn strip_body_preserves_fields() {
+        let mut record = Record::<BufferedBody>::default();
+        record.replace_body(b"hello".to_vec());
+        record
+            .set_header(WarcHeader::TargetURI, "https://example.com/")
+            .unwrap();
+        record.set_truncated_type(TruncatedType::Length);
+
+        let record_id = record.warc_id().to_owned();
+        let date = *record.date();
+
+        let stripped = record.strip_body();
+
+        assert_eq!(stripped.content_length(), 0);
+        assert_eq!(stripped.warc_id(), record_id);
+        assert_eq!(stripped.date(), &date);
+        assert_eq!(stripped.warc_type(), &RecordType::Resource);
+        assert_eq!(stripped.truncated_type(), &Some(TruncatedType::Length));
+        assert_eq!(
+            stripped.header(WarcHeader::TargetURI).as_deref(),
+            Some("https://example.com/")
+        );
+    }
+
     /// `Display` for a buffered record renders the full header block — version line and
     /// derived fields included — followed by the body bytes.
     #[test]
@@ -1107,7 +1133,7 @@ mod record_tests {
     fn body() {
         let mut record = Record::<BufferedBody>::default();
         assert_eq!(record.content_length(), 0);
-        assert_eq!(record.body(), &[]);
+        assert_eq!(record.body(), b"");
         record.replace_body(b"hello!!".to_vec());
         assert_eq!(record.content_length(), 7);
         assert_eq!(record.body(), b"hello!!");
