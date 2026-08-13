@@ -23,7 +23,37 @@ impl<W: Write> WarcWriter<W> {
     ///
     /// The number of bytes written is returned upon success.
     pub fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
-        self.write_raw(&record.to_raw_header(), &record.body())
+        // Validate every line before emitting anything, mirroring `write_raw`, so that a
+        // rejected record leaves no partial bytes in the output.
+        validate_version(record.warc_version()).map_err(invalid_input)?;
+        record
+            .visit_header_lines(crate::record::validate_header)
+            .map_err(invalid_input)?;
+
+        let writer = &mut self.writer;
+        let mut bytes_written = 0;
+        let mut emit = |data: &[u8]| -> io::Result<()> {
+            writer.write_all(data)?;
+            bytes_written += data.len();
+            Ok(())
+        };
+
+        emit(b"WARC/")?;
+        emit(record.warc_version().as_bytes())?;
+        emit(b"\r\n")?;
+        record.visit_header_lines(|header, value| {
+            emit(header.name().as_bytes())?;
+            emit(b": ")?;
+            emit(value)?;
+            emit(b"\r\n")
+        })?;
+        emit(b"\r\n")?;
+
+        emit(record.body())?;
+        emit(b"\r\n")?;
+        emit(b"\r\n")?;
+
+        Ok(bytes_written)
     }
 
     /// Write a single raw record.
@@ -50,14 +80,14 @@ impl<W: Write> WarcWriter<W> {
         emit(b"\r\n")?;
 
         for (token, value) in headers.as_ref() {
-            emit(token.to_string().as_bytes())?;
+            emit(token.name().as_bytes())?;
             emit(b": ")?;
             emit(value)?;
             emit(b"\r\n")?;
         }
         // `WARC-Concurrent-To` may repeat: each value becomes its own header line.
         for value in &headers.concurrent_to {
-            emit(WarcHeader::ConcurrentTo.to_string().as_bytes())?;
+            emit(WarcHeader::ConcurrentTo.name().as_bytes())?;
             emit(b": ")?;
             emit(value)?;
             emit(b"\r\n")?;
@@ -111,14 +141,18 @@ fn invalid_input(error: crate::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, error)
 }
 
+/// Reject a version string containing the line breaks that would corrupt the `WARC/` line.
+fn validate_version(version: &str) -> Result<(), crate::Error> {
+    (!version.contains(['\r', '\n']))
+        .then_some(())
+        .ok_or_else(|| crate::Error::MalformedVersion(version.to_string()))
+}
+
 /// Reject a raw header block that would serialize to a record no reader could parse back: a
 /// version or value containing a line break, or an unknown header name outside the token
 /// grammar.
 fn validate_raw_header(headers: &RawRecordHeader) -> Result<(), crate::Error> {
-    let version = headers.version.as_bytes();
-    if version.contains(&b'\r') || version.contains(&b'\n') {
-        return Err(crate::Error::MalformedVersion(headers.version.clone()));
-    }
+    validate_version(&headers.version)?;
 
     for (header, value) in headers.as_ref() {
         crate::record::validate_header(header, value)?;
