@@ -1422,7 +1422,6 @@ mod next_item_tests {
         let mut length = 5;
         let record = Record::<EmptyBody>::new()
             .add_fixed_stream(&mut complete, &mut length)
-            .unwrap()
             .into_buffered()
             .unwrap();
         assert_eq!(record.body(), b"12345");
@@ -1431,7 +1430,6 @@ mod next_item_tests {
         let mut length = 5;
         let result = Record::<EmptyBody>::new()
             .add_fixed_stream(&mut short, &mut length)
-            .unwrap()
             .into_buffered();
         assert!(matches!(result, Err(Error::UnexpectedEOB)));
     }

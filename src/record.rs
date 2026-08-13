@@ -669,12 +669,13 @@ impl Record<EmptyBody> {
     ///
     /// The stream is treated as a bare body source: unlike records produced by
     /// `WarcReader::stream_records`, no `\r\n\r\n` record terminator is expected after it.
+    #[must_use]
     pub fn add_fixed_stream<'r, R: Read>(
         self,
         stream: &'r mut R,
         len: &'r mut u64,
-    ) -> std::io::Result<Record<StreamingBody<'r, R>>> {
-        Ok(self.with_body_kind(StreamingBody::new(stream, len)))
+    ) -> Record<StreamingBody<'r, R>> {
+        self.with_body_kind(StreamingBody::new(stream, len))
     }
 
     /// Add a streaming body positioned within a WARC stream, coordinating consumption of the
