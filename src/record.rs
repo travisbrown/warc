@@ -34,17 +34,20 @@ mod streaming_trait {
     /// An associated type indicating the body is streamed from a reader.
     pub struct StreamingBody<'t, T: Read> {
         stream: &'t mut T,
-        remaining: &'t mut u64,
+        /// The declared `Content-Length`, unaffected by reads.
+        declared_content_len: u64,
+        remaining_len: &'t mut u64,
         /// Set once the record's `\r\n\r\n` terminator has been consumed and verified, so that
         /// the owning `StreamingIter` does not read it a second time. `None` for bodies built
         /// over external streams, which carry no terminator contract.
         terminator_consumed: Option<&'t mut bool>,
     }
     impl<'t, T: Read> StreamingBody<'t, T> {
-        pub(crate) const fn new(stream: &'t mut T, max_len: &'t mut u64) -> Self {
+        pub(crate) const fn new(stream: &'t mut T, remaining_len: &'t mut u64) -> Self {
             StreamingBody {
                 stream,
-                remaining: max_len,
+                declared_content_len: *remaining_len,
+                remaining_len,
                 terminator_consumed: None,
             }
         }
@@ -53,18 +56,20 @@ mod streaming_trait {
         /// the given flag.
         pub(crate) const fn with_terminator_flag(
             stream: &'t mut T,
-            max_len: &'t mut u64,
+            remaining_len: &'t mut u64,
             terminator_consumed: &'t mut bool,
         ) -> Self {
             StreamingBody {
                 stream,
-                remaining: max_len,
+                declared_content_len: *remaining_len,
+                remaining_len,
                 terminator_consumed: Some(terminator_consumed),
             }
         }
 
-        pub(crate) const fn len(&self) -> u64 {
-            *self.remaining
+        /// The unread portion of the body, shrinking as the stream is consumed.
+        pub(crate) const fn remaining_len(&self) -> u64 {
+            *self.remaining_len
         }
 
         /// Read and verify the record's `\r\n\r\n` terminator, recording the consumption for
@@ -93,7 +98,7 @@ mod streaming_trait {
     }
     impl<T: Read> BodyKind for StreamingBody<'_, T> {
         fn content_length(&self) -> u64 {
-            *self.remaining
+            self.declared_content_len
         }
     }
 
@@ -101,10 +106,10 @@ mod streaming_trait {
         fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
             // `try_from` fails only when the remaining length exceeds the address space, in
             // which case the read is capped at `data.len()` anyway.
-            let max_read = usize::try_from(*self.remaining)
+            let max_read = usize::try_from(*self.remaining_len)
                 .map_or(data.len(), |remaining| data.len().min(remaining));
             self.stream.read(&mut data[..max_read]).inspect(|&n| {
-                *self.remaining -= n as u64;
+                *self.remaining_len -= n as u64;
             })
         }
     }
@@ -580,7 +585,10 @@ impl<T: BodyKind> Record<T> {
 
     /// Return the Content-Length header for this record.
     ///
-    /// This value is guaranteed to match the actual length of the body.
+    /// For buffered and empty bodies this is the actual length of the body. For streaming
+    /// bodies it is the declared `Content-Length`, unaffected by how much of the body has
+    /// been read (though the actual stream may still turn out shorter or longer than
+    /// declared).
     pub fn content_length(&self) -> u64 {
         self.body.content_length()
     }
@@ -726,7 +734,7 @@ impl<T: Read> Record<StreamingBody<'_, T>> {
     pub fn into_buffered(mut self) -> Result<Record<BufferedBody>, WarcError> {
         // Size the buffer to the body, but cap the speculative allocation at `MB` so a bogus
         // `Content-Length` cannot force a huge up-front allocation.
-        let capacity = usize::try_from(self.body.len())
+        let capacity = usize::try_from(self.body.remaining_len())
             .unwrap_or(usize::MAX)
             .min(crate::MB);
         let mut buf = Vec::with_capacity(capacity);
@@ -735,7 +743,7 @@ impl<T: Read> Record<StreamingBody<'_, T>> {
             .map_err(WarcError::ReadData)?;
 
         // `read_to_end` stops early only when the underlying stream is exhausted.
-        if self.body.len() > 0 {
+        if self.body.remaining_len() > 0 {
             return Err(WarcError::UnexpectedEOB);
         }
 

@@ -1260,7 +1260,6 @@ mod next_item_tests {
     /// The declared `Content-Length` is reported unchanged while the body is being consumed,
     /// rather than shrinking with every read.
     #[test]
-    #[ignore = "known bug (content length shrinks): fix incoming"]
     fn streaming_content_length_is_stable_while_reading() {
         use std::io::Read;
 
