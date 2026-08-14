@@ -108,6 +108,46 @@ impl WarcWriter<BufWriter<fs::File>> {
     }
 }
 
+#[cfg(test)]
+mod write_raw_tests {
+    use super::WarcWriter;
+    use crate::{RawRecordHeader, WarcHeader};
+    use std::io::{self, Write};
+
+    /// A writer that accepts at most one byte per `write` call.
+    struct TrickleWriter(Vec<u8>);
+
+    impl Write for TrickleWriter {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            let n = data.len().min(1);
+            self.0.extend_from_slice(&data[..n]);
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[ignore = "known bug (short writes truncate): fix incoming"]
+    fn short_writes_do_not_truncate() {
+        let headers = RawRecordHeader {
+            version: "1.0".to_owned(),
+            headers: vec![(WarcHeader::WarcType, b"dunno".to_vec())]
+                .into_iter()
+                .collect(),
+        };
+
+        let mut writer = WarcWriter::new(TrickleWriter(Vec::new()));
+        let bytes_written = writer.write_raw(headers, b"12345").unwrap();
+
+        let expected: &[u8] = b"WARC/1.0\r\nwarc-type: dunno\r\n\r\n12345\r\n\r\n";
+        assert_eq!(writer.writer.0.as_slice(), expected);
+        assert_eq!(bytes_written, expected.len());
+    }
+}
+
 #[cfg(feature = "gzip")]
 impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
     /// Create a new writer which writes to a GZIP-compressed file.
