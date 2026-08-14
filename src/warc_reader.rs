@@ -1291,6 +1291,55 @@ mod next_item_tests {
         assert_eq!(buffered.body(), b"345");
     }
 
+    /// After the final `None`, further calls keep returning `None` instead of yielding a
+    /// spurious error for a body the iterator already consumed.
+    #[test]
+    #[ignore = "known bug (next_item not fused): fix incoming"]
+    fn next_item_is_fused_after_end() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:fused:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw));
+        let mut stream_iter = reader.stream_records();
+
+        // Leave the record's body unread so that reaching the end must skip it.
+        let _record = stream_iter.next_item().unwrap().unwrap();
+        assert!(stream_iter.next_item().is_none());
+        assert!(stream_iter.next_item().is_none());
+        assert!(stream_iter.next_item().is_none());
+    }
+
+    /// The iterator is equally fused when the final record was buffered rather than skipped.
+    #[test]
+    fn next_item_is_fused_after_buffered_end() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:fused-buffered:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw));
+        let mut stream_iter = reader.stream_records();
+
+        let record = stream_iter.next_item().unwrap().unwrap();
+        assert_eq!(record.into_buffered().unwrap().body(), b"12345");
+        assert!(stream_iter.next_item().is_none());
+        assert!(stream_iter.next_item().is_none());
+    }
+
     /// A record whose declared body length outruns the stream: 5 bytes are declared but only
     /// 2 are present.
     const TRUNCATED_BODY: &[u8] = b"\
