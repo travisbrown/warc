@@ -1427,7 +1427,9 @@ mod raw_tests {
 #[cfg(test)]
 mod builder_tests {
     use crate::header::WarcHeader;
-    use crate::{EmptyBody, RawRecordHeader, Record, RecordBuilder, RecordType, TruncatedType};
+    use crate::{
+        EmptyBody, Error, RawRecordHeader, Record, RecordBuilder, RecordType, TruncatedType,
+    };
 
     use std::convert::TryFrom;
 
@@ -1563,6 +1565,53 @@ mod builder_tests {
         );
 
         assert!(builder.build().is_err());
+    }
+
+    /// A rejected header value no longer fails the build once a later call replaces it with
+    /// a valid one.
+    #[test]
+    #[ignore = "known bug (stale builder errors): fix incoming"]
+    fn broken_header_is_cured_by_a_later_set() {
+        let record = RecordBuilder::default()
+            .header(WarcHeader::Date, "not-a-dayTor:a:time")
+            .header(WarcHeader::Date, "2020-07-08T02:52:55Z")
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            record.header(WarcHeader::Date).unwrap(),
+            "2020-07-08T02:52:55Z"
+        );
+    }
+
+    /// A `Content-Length` set before the body it describes is retried against the finished
+    /// record, so the order of the two calls does not matter.
+    #[test]
+    #[ignore = "known bug (stale builder errors): fix incoming"]
+    fn content_length_before_body_is_cured() {
+        let record = RecordBuilder::default()
+            .header(WarcHeader::ContentLength, "5")
+            .body(b"12345".to_vec())
+            .build()
+            .unwrap();
+
+        assert_eq!(record.content_length(), 5);
+    }
+
+    /// The build error blames a header that is still broken, not one that was broken and
+    /// later fixed.
+    #[test]
+    #[ignore = "known bug (stale builder errors): fix incoming"]
+    fn build_error_blames_a_still_broken_header() {
+        let builder = RecordBuilder::default()
+            .header(WarcHeader::ContentLength, "9")
+            .header(WarcHeader::Date, "not-a-dayTor:a:time")
+            .header(WarcHeader::Date, "2020-07-08T02:52:55Z");
+
+        match builder.build() {
+            Err(Error::MalformedHeader(WarcHeader::ContentLength, _)) => {}
+            other => panic!("expected an error blaming content-length, got {other:?}"),
+        }
     }
 
     #[test]
