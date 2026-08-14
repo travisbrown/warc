@@ -515,6 +515,38 @@ mod iter_raw_tests {
         }
     }
 
+    /// A stream-level error leaves the reader at an unspecified position, so the iterator
+    /// fuses instead of yielding garbage parsed from the middle of the broken record.
+    #[test]
+    #[ignore = "known bug (iterators not fused): fix incoming"]
+    fn raw_iter_fuses_after_stream_error() {
+        // A record with a malformed terminator, followed by a perfectly valid record that a
+        // non-fused iterator would happily (and wrongly) yield.
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            12345ABCD\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:after-error:record-1>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        assert!(matches!(
+            reader.next(),
+            Some(Err(Error::MalformedRecordTerminator))
+        ));
+        assert!(reader.next().is_none());
+        assert!(reader.next().is_none());
+    }
+
     /// A stream that never terminates its header block is stopped at the size bound instead of
     /// being buffered without limit.
     #[test]
@@ -1348,6 +1380,113 @@ mod next_item_tests {
 
         let record = stream_iter.next_item().unwrap().unwrap();
         assert_eq!(record.into_buffered().unwrap().body(), b"12345");
+        assert!(stream_iter.next_item().is_none());
+        assert!(stream_iter.next_item().is_none());
+    }
+
+    /// A raw-valid record missing a mandatory header is consumed completely, so iteration
+    /// continues with the next record instead of fusing.
+    #[test]
+    fn record_iter_continues_after_validation_error() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:no-type:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:no-type:record-1>\r\n\
+            WARC-Date: 2020-07-08T02:52:56Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut iter = WarcReader::new(create_reader!(raw)).iter_records();
+
+        assert!(matches!(
+            iter.next(),
+            Some(Err(Error::MissingHeader(crate::WarcHeader::WarcType)))
+        ));
+
+        let record = iter.next().unwrap().unwrap();
+        assert_eq!(record.warc_id(), "<urn:test:no-type:record-1>");
+        assert!(iter.next().is_none());
+    }
+
+    /// A stream-level error fuses the record iterator, like the raw iterator beneath it.
+    #[test]
+    fn record_iter_fuses_after_stream_error() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            12345ABCD";
+
+        let mut iter = WarcReader::new(create_reader!(raw)).iter_records();
+        assert!(matches!(
+            iter.next(),
+            Some(Err(Error::MalformedRecordTerminator))
+        ));
+        assert!(iter.next().is_none());
+    }
+
+    /// A record-validation error leaves the streaming iterator at a well-defined position:
+    /// the invalid record's body is skipped, and the next record is returned.
+    #[test]
+    fn next_item_continues_after_validation_error() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:stream-no-type:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+            WARC/1.1\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:stream-no-type:record-1>\r\n\
+            WARC-Date: 2020-07-08T02:52:56Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw));
+        let mut stream_iter = reader.stream_records();
+
+        assert!(matches!(
+            stream_iter.next_item(),
+            Some(Err(Error::MissingHeader(crate::WarcHeader::WarcType)))
+        ));
+
+        let record = stream_iter.next_item().unwrap().unwrap();
+        assert_eq!(record.warc_id(), "<urn:test:stream-no-type:record-1>");
+        assert_eq!(record.into_buffered().unwrap().body(), b"12345");
+        assert!(stream_iter.next_item().is_none());
+    }
+
+    /// A stream-level error fuses the streaming iterator instead of yielding further errors
+    /// from an unspecified position.
+    #[test]
+    #[ignore = "known bug (iterators not fused): fix incoming"]
+    fn next_item_fuses_after_stream_error() {
+        let mut reader = WarcReader::new(create_reader!(TRUNCATED_BODY));
+        let mut stream_iter = reader.stream_records();
+
+        // Leave the first record's body unread so that the next call must skip it and hit
+        // the truncation.
+        let _record = stream_iter.next_item().unwrap().unwrap();
+        assert!(matches!(
+            stream_iter.next_item(),
+            Some(Err(Error::UnexpectedEOB))
+        ));
         assert!(stream_iter.next_item().is_none());
         assert!(stream_iter.next_item().is_none());
     }
