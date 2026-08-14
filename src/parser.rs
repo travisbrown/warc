@@ -111,11 +111,7 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)
 
     // TODO: Technically if we didn't find a `content-length` header, the record is invalid. Should
     // we be returning an error here instead?
-    if content_length.is_none() {
-        content_length = Some(0);
-    }
-
-    Ok((input, (version, warc_headers, content_length.unwrap())))
+    Ok((input, (version, warc_headers, content_length.unwrap_or(0))))
 }
 
 /// Parse an entire WARC record.
