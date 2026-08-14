@@ -4,6 +4,8 @@
 #![forbid(unsafe_code)]
 //! A WARC (Web ARChive) library
 
+const MB: usize = 1_048_576;
+
 mod error;
 pub use error::Error;
 
