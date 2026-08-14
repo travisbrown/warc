@@ -1180,6 +1180,23 @@ mod raw_tests {
         }
     }
 
+    /// The formatted header block is terminated by CRLF throughout, as the grammar requires.
+    #[test]
+    #[ignore = "known bug (WARC grammar divergence): fix incoming"]
+    fn display_uses_crlf_line_endings() {
+        let headers = RawRecordHeader {
+            version: "1.1".to_owned(),
+            headers: vec![(WarcHeader::WarcType, b"resource".to_vec())]
+                .into_iter()
+                .collect(),
+        };
+
+        assert_eq!(
+            headers.to_string(),
+            "WARC/1.1\r\nwarc-type: resource\r\n\r\n"
+        );
+    }
+
     #[test]
     fn verify_display() {
         let header_entries = vec![
