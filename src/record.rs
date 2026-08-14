@@ -856,7 +856,7 @@ impl fmt::Display for Record<BufferedBody> {
 }
 impl fmt::Display for Record<EmptyBody> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Record({:?}, Empty)", self.headers)
+        write!(f, "Record({}, Empty)", self.to_raw_header())
     }
 }
 
@@ -1092,7 +1092,6 @@ mod record_tests {
     /// `Display` for an empty-bodied record renders the same header block, not a debug view
     /// of the stored extra headers.
     #[test]
-    #[ignore = "known bug (header debug view leaked): fix incoming"]
     fn display_empty_record_renders_full_header_block() {
         let mut record = Record::<EmptyBody>::new();
         record
