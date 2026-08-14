@@ -42,8 +42,7 @@ pub enum Error {
     /// was read completely, but is invalid.
     #[error("Malformed record terminator.")]
     MalformedRecordTerminator,
-    /// The record's version string contains a line break, so writing it would produce a
-    /// record no reader could parse back.
+    /// A version string does not name a WARC version supported by this crate.
     #[error("Malformed version: {0}")]
     MalformedVersion(String),
 }

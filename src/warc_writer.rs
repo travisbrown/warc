@@ -23,9 +23,8 @@ impl<W: Write> WarcWriter<W> {
     ///
     /// The number of bytes written is returned upon success.
     pub fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
-        // Validate every line before emitting anything, mirroring `write_raw`, so that a
+        // Validate every header line before emitting anything, mirroring `write_raw`, so that a
         // rejected record leaves no partial bytes in the output.
-        validate_version(record.warc_version()).map_err(invalid_input)?;
         record
             .visit_header_lines(crate::record::validate_header)
             .map_err(invalid_input)?;
@@ -39,7 +38,7 @@ impl<W: Write> WarcWriter<W> {
         };
 
         emit(b"WARC/")?;
-        emit(record.warc_version().as_bytes())?;
+        emit(record.warc_version().as_str().as_bytes())?;
         emit(b"\r\n")?;
         record.visit_header_lines(|header, value| {
             emit(header.name().as_bytes())?;
@@ -76,7 +75,7 @@ impl<W: Write> WarcWriter<W> {
         };
 
         emit(b"WARC/")?;
-        emit(headers.version.as_bytes())?;
+        emit(headers.version.as_str().as_bytes())?;
         emit(b"\r\n")?;
 
         for (token, value) in headers.as_ref() {
@@ -158,19 +157,9 @@ fn invalid_input(error: crate::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, error)
 }
 
-/// Reject a version string containing the line breaks that would corrupt the `WARC/` line.
-fn validate_version(version: &str) -> Result<(), crate::Error> {
-    (!version.contains(['\r', '\n']))
-        .then_some(())
-        .ok_or_else(|| crate::Error::MalformedVersion(version.to_string()))
-}
-
 /// Reject a raw header block that would serialize to a record no reader could parse back: a
-/// version or value containing a line break, or an unknown header name outside the token
-/// grammar.
+/// value containing a line break, or an unknown header name outside the token grammar.
 fn validate_raw_header(headers: &RawRecordHeader) -> Result<(), crate::Error> {
-    validate_version(&headers.version)?;
-
     for (header, value) in headers.as_ref() {
         crate::record::validate_header(header, value)?;
     }
@@ -200,12 +189,12 @@ mod write_raw_tests {
     }
 
     /// Raw header blocks that could not be parsed back are rejected before anything is
-    /// written: injected values, invalid unknown names, an injected version string, and
-    /// injected `WARC-Concurrent-To` values.
+    /// written: injected values, invalid unknown names, and injected `WARC-Concurrent-To`
+    /// values.
     #[test]
     fn write_raw_rejects_header_injection() {
         let valid = RawRecordHeader {
-            version: "1.1".to_owned(),
+            version: crate::WarcVersion::V1_1,
             headers: vec![(WarcHeader::WarcType, b"dunno".to_vec())]
                 .into_iter()
                 .collect(),
@@ -224,10 +213,6 @@ mod write_raw_tests {
             .as_mut()
             .insert(WarcHeader::Unknown("evil name".to_string()), b"v".to_vec());
         assert_rejected(&invalid_name);
-
-        let mut injected_version = valid.clone();
-        injected_version.version = "1.1\r\nevil: x".to_owned();
-        assert_rejected(&injected_version);
 
         let mut injected_concurrent_to = valid.clone();
         injected_concurrent_to
@@ -363,7 +348,7 @@ mod write_raw_tests {
     #[test]
     fn short_writes_do_not_truncate() {
         let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![(WarcHeader::WarcType, b"dunno".to_vec())]
                 .into_iter()
                 .collect(),
@@ -410,7 +395,7 @@ mod from_path_tests {
 
     fn record_with_body(body: &[u8]) -> RawRecordHeader {
         RawRecordHeader {
-            version: "1.0".to_owned(),
+            version: crate::WarcVersion::V1_0,
             headers: vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (

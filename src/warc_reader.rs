@@ -212,7 +212,7 @@ fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, u64), Error> {
     }
 
     let headers = RawRecordHeader {
-        version: version.to_owned(),
+        version,
         headers: header_map,
         concurrent_to,
     };
@@ -672,7 +672,7 @@ mod iter_raw_tests {
             \r\n\
         ";
 
-        let expected_version = "1.0";
+        let expected_version = crate::WarcVersion::V1_0;
         let expected_headers: IndexMap<WarcHeader, Vec<u8>> = IndexMap::from_iter(vec![
             (WarcHeader::WarcType, b"dunno".to_vec()),
             (WarcHeader::ContentLength, b"5".to_vec()),
@@ -943,7 +943,7 @@ mod iter_raw_tests {
 
         let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
         {
-            let expected_version = "1.0";
+            let expected_version = crate::WarcVersion::V1_0;
             let expected_headers: IndexMap<WarcHeader, Vec<u8>> = IndexMap::from_iter(vec![
                 (WarcHeader::WarcType, b"dunno".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
@@ -962,7 +962,7 @@ mod iter_raw_tests {
         }
 
         {
-            let expected_version = "1.0";
+            let expected_version = crate::WarcVersion::V1_0;
             let expected_headers: IndexMap<WarcHeader, Vec<u8>> = IndexMap::from_iter(vec![
                 (WarcHeader::WarcType, b"another".to_vec()),
                 (WarcHeader::ContentLength, b"6".to_vec()),
@@ -1013,7 +1013,7 @@ mod next_item_tests {
             .unwrap()
             .into_buffered()
             .unwrap();
-        assert_eq!(record.warc_version(), "1.0");
+        assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
         assert_eq!(record.content_length(), 5);
         assert_eq!(record.warc_id(), "<urn:test:basic-record:record-0>");
         assert_eq!(record.body(), b"12345");
@@ -1050,7 +1050,7 @@ mod next_item_tests {
                 .unwrap()
                 .into_buffered()
                 .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
             assert_eq!(record.content_length(), 5);
             assert_eq!(record.warc_id(), "<urn:test:two-records:record-0>");
             assert_eq!(record.body(), b"12345");
@@ -1063,7 +1063,7 @@ mod next_item_tests {
                 .unwrap()
                 .into_buffered()
                 .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
             assert_eq!(record.content_length(), 6);
             assert_eq!(record.warc_id(), "<urn:test:two-records:record-1>");
             assert_eq!(record.body(), b"123456");
@@ -1103,7 +1103,7 @@ mod next_item_tests {
                 .unwrap()
                 .into_buffered()
                 .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
             assert_eq!(record.content_length(), 6);
             assert_eq!(record.warc_id(), "<urn:test:two-records:record-1>");
             assert_eq!(record.body(), b"123456");
@@ -1149,7 +1149,7 @@ mod next_item_tests {
                 .unwrap()
                 .into_buffered()
                 .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
             assert_eq!(record.content_length(), 5);
             assert_eq!(record.warc_id(), "<urn:test:three-records:record-0>");
             assert_eq!(record.body(), b"12345");
@@ -1162,7 +1162,7 @@ mod next_item_tests {
                 .unwrap()
                 .into_buffered()
                 .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
             assert_eq!(record.content_length(), 6);
             assert_eq!(record.warc_id(), "<urn:test:three-records:record-1>");
             assert_eq!(record.body(), b"123456");
@@ -1175,7 +1175,7 @@ mod next_item_tests {
                 .unwrap()
                 .into_buffered()
                 .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
             assert_eq!(record.content_length(), 8);
             assert_eq!(record.warc_id(), "<urn:test:three-records:record-2>");
             assert_eq!(record.body(), b"12345678");
@@ -1286,7 +1286,7 @@ mod next_item_tests {
             .unwrap()
             .into_buffered()
             .unwrap();
-        assert_eq!(record.warc_version(), "1.0");
+        assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
         assert_eq!(record.content_length(), 0);
         assert_eq!(record.warc_id(), "<urn:test:empty-content-length>");
         assert_eq!(record.body(), b"");
@@ -1319,7 +1319,7 @@ mod next_item_tests {
         // Test the first record with Content-Length: 0
         {
             let record = iter.next().unwrap().unwrap();
-            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
             assert_eq!(record.content_length(), 0);
             assert_eq!(record.warc_id(), "<urn:test:zero-content-length>");
             assert_eq!(record.body(), b"");
@@ -1328,7 +1328,7 @@ mod next_item_tests {
         // Test the second record with non-zero Content-Length
         {
             let record = iter.next().unwrap().unwrap();
-            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.warc_version(), crate::WarcVersion::V1_0);
             assert_eq!(record.content_length(), 7);
             assert_eq!(record.warc_id(), "<urn:test:nonzero-content-length>");
             assert_eq!(record.body(), b"1234567");

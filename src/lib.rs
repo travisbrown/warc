@@ -71,3 +71,6 @@ pub use record_type::RecordType;
 
 mod truncated_type;
 pub use truncated_type::TruncatedType;
+
+mod version;
+pub use version::WarcVersion;
