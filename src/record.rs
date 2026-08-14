@@ -201,36 +201,10 @@ impl std::fmt::Display for RawRecordHeader {
 }
 
 /// A builder for WARC records from data.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RecordBuilder {
     value: Record<BufferedBody>,
     broken_headers: IndexMap<WarcHeader, Vec<u8>>,
-    last_error: Option<WarcError>,
-}
-
-// HACK: std::io::Error doesn't implement Clone, this is the next best thing
-// see: https://github.com/rust-lang/rust/issues/24135
-impl Clone for RecordBuilder {
-    fn clone(&self) -> Self {
-        let err: Option<&WarcError> = self.last_error.as_ref();
-        let last_error: Option<WarcError> = err.map(|err| match err {
-            WarcError::ReadData(e) => WarcError::ReadData(std::io::Error::from(e.kind())),
-            WarcError::ParseHeaders(e) => WarcError::ParseHeaders(e.clone()),
-            WarcError::MissingHeader(e) => WarcError::MissingHeader(e.clone()),
-            WarcError::MalformedHeader(h, e) => WarcError::MalformedHeader(h.clone(), e.clone()),
-            WarcError::DuplicateHeader(h) => WarcError::DuplicateHeader(h.clone()),
-            WarcError::ReadOverflow => WarcError::ReadOverflow,
-            WarcError::BodyTooLarge => WarcError::BodyTooLarge,
-            WarcError::UnexpectedEOH => WarcError::UnexpectedEOH,
-            WarcError::UnexpectedEOB => WarcError::UnexpectedEOB,
-            WarcError::MalformedRecordTerminator => WarcError::MalformedRecordTerminator,
-        });
-        Self {
-            value: self.value.clone(),
-            broken_headers: self.broken_headers.clone(),
-            last_error,
-        }
-    }
 }
 
 /// A single WARC record.
@@ -745,24 +719,35 @@ impl RecordBuilder {
         self
     }
 
+    /// Apply a raw header value to a record, first checking that it is UTF-8.
+    fn set_raw_header(
+        record: &mut Record<BufferedBody>,
+        key: WarcHeader,
+        value: &[u8],
+    ) -> Result<(), WarcError> {
+        match std::str::from_utf8(value) {
+            Ok(string) => record.set_header(key, string).map(|_| ()),
+            Err(_) => Err(WarcError::MalformedHeader(
+                key,
+                "not a UTF-8 string".to_string(),
+            )),
+        }
+    }
+
     /// Create or replace an arbitrary header of the record under construction.
+    ///
+    /// A value that is not valid for the record as built so far is kept aside and retried
+    /// against the finished record when `build` runs, so an error that a later call cures
+    /// (for example a `Content-Length` set before the body it describes) does not fail the
+    /// build.
     #[must_use]
     pub fn header<V: Into<Vec<u8>>>(mut self, key: WarcHeader, value: V) -> Self {
         let value = value.into();
-        let result = match std::str::from_utf8(&value) {
-            Ok(string) => self.value.set_header(key.clone(), string).map(|_| ()),
-            Err(_) => Err(WarcError::MalformedHeader(
-                key.clone(),
-                "not a UTF-8 string".to_string(),
-            )),
-        };
-
-        match result {
+        match Self::set_raw_header(&mut self.value, key.clone(), &value) {
             Ok(()) => {
                 self.broken_headers.shift_remove(&key);
             }
-            Err(e) => {
-                self.last_error = Some(e);
+            Err(_) => {
                 self.broken_headers.insert(key, value);
             }
         }
@@ -778,7 +763,6 @@ impl RecordBuilder {
         let Self {
             value,
             broken_headers,
-            ..
         } = self;
         let (mut headers, body) = value.into_raw_parts();
         headers.as_mut().extend(broken_headers);
@@ -787,23 +771,25 @@ impl RecordBuilder {
     }
 
     /// Build a record from the data collected in this builder.
+    ///
+    /// Header values that were not valid when they were set are retried here, in the order
+    /// they were set, against the finished record.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error for the first header value that is still not valid for the
+    /// finished record.
     pub fn build(self) -> Result<Record<BufferedBody>, WarcError> {
         let Self {
-            value,
+            mut value,
             broken_headers,
-            last_error,
         } = self;
 
-        last_error.map_or_else(
-            || {
-                debug_assert!(
-                    broken_headers.is_empty(),
-                    "invariant violation: broken headers without last error"
-                );
-                Ok(value)
-            },
-            Err,
-        )
+        for (key, raw_value) in broken_headers {
+            Self::set_raw_header(&mut value, key, &raw_value)?;
+        }
+
+        Ok(value)
     }
 }
 
@@ -1570,7 +1556,6 @@ mod builder_tests {
     /// A rejected header value no longer fails the build once a later call replaces it with
     /// a valid one.
     #[test]
-    #[ignore = "known bug (stale builder errors): fix incoming"]
     fn broken_header_is_cured_by_a_later_set() {
         let record = RecordBuilder::default()
             .header(WarcHeader::Date, "not-a-dayTor:a:time")
@@ -1587,7 +1572,6 @@ mod builder_tests {
     /// A `Content-Length` set before the body it describes is retried against the finished
     /// record, so the order of the two calls does not matter.
     #[test]
-    #[ignore = "known bug (stale builder errors): fix incoming"]
     fn content_length_before_body_is_cured() {
         let record = RecordBuilder::default()
             .header(WarcHeader::ContentLength, "5")
@@ -1601,7 +1585,6 @@ mod builder_tests {
     /// The build error blames a header that is still broken, not one that was broken and
     /// later fixed.
     #[test]
-    #[ignore = "known bug (stale builder errors): fix incoming"]
     fn build_error_blames_a_still_broken_header() {
         let builder = RecordBuilder::default()
             .header(WarcHeader::ContentLength, "9")
