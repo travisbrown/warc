@@ -1034,6 +1034,77 @@ mod record_tests {
         );
     }
 
+    /// An `Unknown` spelling of a well-known name is folded into its variant, so it cannot
+    /// bypass the interception that keeps derived fields out of the stored header map.
+    #[test]
+    #[ignore = "known bug (spellings not normalized): fix incoming"]
+    fn set_header_normalizes_unknown_spellings() {
+        let mut record = Record::<BufferedBody>::default();
+
+        record
+            .set_header(
+                WarcHeader::Unknown("WARC-Date".to_string()),
+                "2020-07-08T02:52:55Z",
+            )
+            .unwrap();
+        assert_eq!(
+            record.header(WarcHeader::Date).unwrap(),
+            "2020-07-08T02:52:55Z"
+        );
+
+        record
+            .set_header(WarcHeader::Unknown("warc-type".to_string()), "revisit")
+            .unwrap();
+        assert_eq!(record.warc_type(), &RecordType::Revisit);
+
+        // Lookups normalize the same way, and genuinely unknown names are lower-cased.
+        assert_eq!(
+            record
+                .header(WarcHeader::Unknown("content-length".to_string()))
+                .unwrap(),
+            "0"
+        );
+        record
+            .set_header(WarcHeader::Unknown("X-Custom".to_string()), "value")
+            .unwrap();
+        assert_eq!(
+            record
+                .header(WarcHeader::Unknown("x-custom".to_string()))
+                .unwrap(),
+            "value"
+        );
+    }
+
+    /// The record serializes a single `warc-date` line, so its own reader accepts it again;
+    /// the unnormalized spelling used to produce a duplicate line the reader rejected.
+    #[test]
+    #[ignore = "known bug (spellings not normalized): fix incoming"]
+    fn unknown_spelling_of_known_header_round_trips() {
+        let mut record = Record::<BufferedBody>::default();
+        record
+            .set_header(
+                WarcHeader::Unknown("WARC-Date".to_string()),
+                "2020-07-08T02:52:55Z",
+            )
+            .unwrap();
+
+        let mut writer = crate::WarcWriter::new(std::io::BufWriter::new(Vec::new()));
+        writer.write(&record).unwrap();
+        let bytes = writer.into_inner().unwrap();
+
+        let reader = crate::WarcReader::new(std::io::Cursor::new(bytes));
+        let records = reader
+            .iter_records()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].header(WarcHeader::Date).unwrap(),
+            "2020-07-08T02:52:55Z"
+        );
+    }
+
     /// Values that would inject header lines, or end the header block early, are rejected.
     #[test]
     fn set_header_rejects_values_with_line_breaks() {
@@ -1548,6 +1619,53 @@ mod raw_tests {
         };
         headers.as_mut().insert(header, value);
         headers
+    }
+
+    /// A hand-built raw block may spell a well-known field as `Unknown`; conversion folds it
+    /// into the typed field.
+    #[test]
+    #[ignore = "known bug (spellings not normalized): fix incoming"]
+    fn verify_unknown_spelling_is_normalized() {
+        let headers = RawRecordHeader {
+            version: "1.1".to_owned(),
+            headers: vec![
+                (
+                    WarcHeader::Unknown("Warc-Type".to_string()),
+                    b"dunno".to_vec(),
+                ),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (
+                    WarcHeader::RecordID,
+                    b"<urn:test:unknown-spelling:record-0>".to_vec(),
+                ),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+            ]
+            .into_iter()
+            .collect(),
+            concurrent_to: Vec::new(),
+        };
+
+        let record = Record::<EmptyBody>::try_from(headers).unwrap();
+        assert_eq!(
+            record.warc_type(),
+            &RecordType::Unknown("dunno".to_string())
+        );
+    }
+
+    /// An `Unknown` spelling that collides with a field already present is the duplicate the
+    /// reader would reject.
+    #[test]
+    #[ignore = "known bug (spellings not normalized): fix incoming"]
+    fn verify_unknown_spelling_collision_is_rejected() {
+        let headers = headers_with(
+            WarcHeader::Unknown("WARC-Date".to_string()),
+            b"2021-01-01T00:00:00Z".to_vec(),
+        );
+
+        assert!(matches!(
+            Record::<EmptyBody>::try_from(headers),
+            Err(Error::DuplicateHeader(WarcHeader::Date))
+        ));
     }
 
     #[test]
