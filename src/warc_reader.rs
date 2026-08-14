@@ -99,11 +99,28 @@ fn read_header_block<R: BufRead>(
 
 /// Parse a raw header block into its headers and the expected body length.
 fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> {
-    let (_, (version, headers, expected_body_len)) = parser::headers(buffer).map_err(|e| {
-        Error::ParseHeaders(
-            e.map(|inner| nom::error::Error::new(inner.input.to_owned(), inner.code)),
-        )
-    })?;
+    let (remainder, (version, headers, expected_body_len)) =
+        parser::headers(buffer).map_err(|e| {
+            Error::ParseHeaders(
+                e.map(|inner| nom::error::Error::new(inner.input.to_owned(), inner.code)),
+            )
+        })?;
+
+    // `parser::headers` stops at the first line that does not match the named-field grammar.
+    // Unless the remainder is exactly the blank line terminating the block, such a line was
+    // present, and it (and every line after it) would otherwise be silently dropped.
+    if remainder != b"\r\n" {
+        let line_len = remainder
+            .iter()
+            .position(|&byte| byte == b'\r' || byte == b'\n')
+            .unwrap_or(remainder.len());
+        return Err(Error::ParseHeaders(nom::Err::Error(
+            nom::error::Error::new(
+                remainder[..line_len].to_vec(),
+                nom::error::ErrorKind::Verify,
+            ),
+        )));
+    }
 
     // A record without `Content-Length` cannot be framed: there is no way to know where its
     // body ends.
@@ -500,7 +517,6 @@ mod iter_raw_tests {
     /// A header line that does not match the named-field grammar is rejected with an error
     /// carrying that line, rather than it (and every line after it) being silently dropped.
     #[test]
-    #[ignore = "known bug (malformed lines dropped): fix incoming"]
     fn malformed_header_line_is_rejected() {
         let raw = b"\
             WARC/1.1\r\n\
