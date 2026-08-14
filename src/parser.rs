@@ -169,6 +169,13 @@ mod tests {
         );
     }
 
+    /// DEL is a control character, so it cannot appear in a field-name token.
+    #[test]
+    #[ignore = "known bug (DEL accepted in header names): fix incoming"]
+    fn header_pair_rejects_del_in_name() {
+        assert!(header(b"evil\x7fname: value\r\n").is_err());
+    }
+
     /// A field value may span lines via LWS continuation; each fold reads as a single space.
     #[test]
     fn header_pair_folded_value_parsing() {
