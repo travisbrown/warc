@@ -1,7 +1,6 @@
 use crate::parser;
 use crate::{BufferedBody, Error, MB, RawRecordHeader, Record, StreamingBody, WarcHeader};
 
-use std::convert::TryInto;
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader};
@@ -319,11 +318,10 @@ impl<R: BufRead> Iterator for RecordIter<R> {
             Err(e) => return Some(Err(e)),
         };
 
-        match headers.try_into() {
-            Ok(b) => {
-                let buffered: Record<_> = b;
-                Some(Ok(buffered.add_body(body)))
-            }
+        // The parser already validated `Content-Length` (it framed the body just read), so
+        // the value flows through rather than being parsed again.
+        match Record::from_validated_raw(headers) {
+            Ok(record) => Some(Ok(record.add_body(body))),
             Err(e) => Some(Err(e)),
         }
     }
@@ -420,15 +418,14 @@ impl<R: BufRead> StreamingIter<'_, R> {
         self.current_item_size = expected_body_len;
         self.terminator_consumed = false;
 
-        match headers.try_into() {
-            Ok(b) => {
-                let record: Record<_> = b;
-                Some(Ok(record.add_managed_stream(
-                    self.reader,
-                    &mut self.current_item_size,
-                    &mut self.terminator_consumed,
-                )))
-            }
+        // The parser already validated `Content-Length` (it produced `expected_body_len`), so
+        // the value flows through rather than being parsed again.
+        match Record::from_validated_raw(headers) {
+            Ok(record) => Some(Ok(record.add_managed_stream(
+                self.reader,
+                &mut self.current_item_size,
+                &mut self.terminator_consumed,
+            ))),
             Err(e) => Some(Err(e)),
         }
     }
