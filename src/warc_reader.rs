@@ -314,7 +314,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
     /// Advance the stream to the next item.
     ///
     /// Returns one of the following:
-    /// * Some(Ok(r))` is the next record read from the stream.
+    /// * `Some(Ok(r))` is the next record read from the stream.
     /// * `Some(Err)` indicates there was a read error.
     /// * `None` indicates no more records are returned.
     pub fn next_item(&mut self) -> Option<Result<Record<StreamingBody<'_, R>>, Error>> {
