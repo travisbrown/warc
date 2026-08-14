@@ -80,9 +80,8 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
 
         if content_length.is_none() && token_str.eq_ignore_ascii_case("content-length") {
             let value_str = str::from_utf8(&header.1).map_err(|_| verify_error(header.0))?;
-            let len = value_str
-                .parse::<u64>()
-                .map_err(|_| verify_error(header.0))?;
+            let len =
+                crate::parse_content_length(value_str).ok_or_else(|| verify_error(header.0))?;
             content_length = Some(len);
         }
 
@@ -230,7 +229,6 @@ mod tests {
     /// `Content-Length` follows the `1*DIGIT` grammar strictly: linear whitespace around the
     /// digits is tolerated, but signs, internal whitespace, and non-digits are not.
     #[test]
-    #[ignore = "known bug (lax content-length parsing): fix incoming"]
     fn content_length_grammar() {
         let block = |value: &str| format!("WARC/1.1\r\ncontent-length: {value}\r\n\r\n");
 
