@@ -261,6 +261,10 @@ fn read_body<R: BufRead>(reader: &mut R, expected_body_len: u64) -> Result<Vec<u
 /// An iterator of raw records streamed from a reader. See `RawRecord` for more information.
 pub struct RawRecordIter<R> {
     reader: R,
+    /// Set once the input has ended or an error has been yielded. Every error here is
+    /// stream-level — it leaves the reader at an unspecified position — so the iterator
+    /// fuses rather than yielding garbage records from the middle of a partly consumed one.
+    finished: bool,
     header_buffer: Vec<u8>,
 }
 
@@ -268,6 +272,7 @@ impl<R: BufRead> RawRecordIter<R> {
     pub(crate) const fn new(reader: R) -> Self {
         Self {
             reader,
+            finished: false,
             header_buffer: Vec::new(),
         }
     }
@@ -277,6 +282,19 @@ impl<R: BufRead> Iterator for RawRecordIter<R> {
     type Item = Result<(RawRecordHeader, Vec<u8>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        let item = self.next_record();
+        self.finished = !matches!(item, Some(Ok(_)));
+        item
+    }
+}
+
+impl<R: BufRead> RawRecordIter<R> {
+    /// Read the next record; the `Iterator` impl wraps this with the fusing logic.
+    fn next_record(&mut self) -> Option<<Self as Iterator>::Item> {
         match read_header_block(&mut self.reader, &mut self.header_buffer)? {
             Ok(()) => {}
             Err(e) => return Some(Err(e)),
@@ -297,6 +315,11 @@ impl<R: BufRead> Iterator for RawRecordIter<R> {
 }
 
 /// An iterator which returns the records read by a reader.
+///
+/// After a stream-level error the underlying reader is at an unspecified position, so the
+/// iterator is fused: every further call returns `None`. A record-validation error (for
+/// example a missing mandatory header) consumes the invalid record completely, and iteration
+/// may continue with the next one.
 pub struct RecordIter<R> {
     raw_iter: RawRecordIter<R>,
 }
@@ -341,8 +364,9 @@ pub struct StreamingIter<'r, R> {
     /// terminator, so that `skip_body` does not read it a second time.
     terminator_consumed: bool,
     first_record: bool,
-    /// Set once the input has cleanly ended, so that further calls keep returning `None`
-    /// instead of probing the exhausted stream again.
+    /// Set once the input has cleanly ended or a stream-level error has been yielded, so
+    /// that further calls keep returning `None` instead of probing an exhausted stream or a
+    /// stream at an unspecified position.
     finished: bool,
     header_buffer: Vec<u8>,
 }
@@ -404,6 +428,12 @@ impl<R: BufRead> StreamingIter<'_, R> {
     /// * `Some(Err)` indicates there was a read error.
     /// * `None` indicates no more records are returned. The iterator is fused: once the input
     ///   has cleanly ended, every further call returns `None`.
+    ///
+    /// A stream-level error — I/O failure, truncation, or an unparseable header block —
+    /// leaves the underlying reader at an unspecified position, so the iterator fuses there
+    /// too: every call after such an error returns `None`. A record-validation error (for
+    /// example a missing mandatory header) leaves the stream at a well-defined position, and
+    /// iteration may continue with the next record.
     pub fn next_item(&mut self) -> Option<Result<Record<StreamingBody<'_, R>>, Error>> {
         if self.finished {
             return None;
@@ -412,6 +442,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
         if self.first_record {
             self.first_record = false;
         } else if let Err(e) = self.skip_body() {
+            self.finished = true;
             return Some(Err(e));
         }
 
@@ -421,12 +452,18 @@ impl<R: BufRead> StreamingIter<'_, R> {
                 return None;
             }
             Some(Ok(())) => {}
-            Some(Err(e)) => return Some(Err(e)),
+            Some(Err(e)) => {
+                self.finished = true;
+                return Some(Err(e));
+            }
         }
 
         let (headers, expected_body_len) = match parse_header_block(&self.header_buffer) {
             Ok(parsed) => parsed,
-            Err(e) => return Some(Err(e)),
+            Err(e) => {
+                self.finished = true;
+                return Some(Err(e));
+            }
         };
         self.current_item_size = expected_body_len;
         self.terminator_consumed = false;
@@ -518,7 +555,6 @@ mod iter_raw_tests {
     /// A stream-level error leaves the reader at an unspecified position, so the iterator
     /// fuses instead of yielding garbage parsed from the middle of the broken record.
     #[test]
-    #[ignore = "known bug (iterators not fused): fix incoming"]
     fn raw_iter_fuses_after_stream_error() {
         // A record with a malformed terminator, followed by a perfectly valid record that a
         // non-fused iterator would happily (and wrongly) yield.
@@ -1475,7 +1511,6 @@ mod next_item_tests {
     /// A stream-level error fuses the streaming iterator instead of yielding further errors
     /// from an unspecified position.
     #[test]
-    #[ignore = "known bug (iterators not fused): fix incoming"]
     fn next_item_fuses_after_stream_error() {
         let mut reader = WarcReader::new(create_reader!(TRUNCATED_BODY));
         let mut stream_iter = reader.stream_records();
