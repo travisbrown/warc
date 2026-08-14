@@ -382,10 +382,8 @@ impl<T: BodyKind> Record<T> {
         let value = value.into();
         match &header {
             WarcHeader::Date => {
-                let old_date = std::mem::replace(
-                    &mut self.record_date,
-                    Record::parse_record_date(&value)?,
-                );
+                let old_date =
+                    std::mem::replace(&mut self.record_date, Record::parse_record_date(&value)?);
                 Ok(Some(Cow::Owned(
                     old_date.to_rfc3339_opts(SecondsFormat::Secs, true),
                 )))
@@ -401,7 +399,7 @@ impl<T: BodyKind> Record<T> {
             WarcHeader::Truncated => {
                 let old_type = self.truncated_type.take();
                 self.truncated_type = Some(TruncatedType::from(&value));
-                Ok(old_type.map(|old| (Cow::Owned(old.to_string()))))
+                Ok(old_type.map(|old| Cow::Owned(old.to_string())))
             }
             WarcHeader::ContentLength => {
                 if Record::parse_content_length(&value)? != self.body.content_length() {
@@ -1111,9 +1109,7 @@ mod raw_tests {
 #[cfg(test)]
 mod builder_tests {
     use crate::header::WarcHeader;
-    use crate::{
-        BufferedBody, EmptyBody, RawRecordHeader, Record, RecordBuilder, RecordType, TruncatedType,
-    };
+    use crate::{EmptyBody, RawRecordHeader, Record, RecordBuilder, RecordType, TruncatedType};
 
     use std::convert::TryFrom;
 
