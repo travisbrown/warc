@@ -1483,6 +1483,24 @@ mod record_tests {
         );
     }
 
+    /// Setting the derived content length returns its canonical previous value, not the
+    /// caller's alternate but equivalent spelling.
+    #[test]
+    #[ignore = "known bug (new content-length returned as previous): fix incoming"]
+    fn set_header_content_length_returns_canonical_previous_value() {
+        let mut record = Record::<EmptyBody>::default();
+
+        let previous = record
+            .set_header(WarcHeader::ContentLength, "\t0\t")
+            .unwrap();
+
+        assert_eq!(previous.as_deref(), Some("0"));
+        assert_eq!(
+            record.header(WarcHeader::ContentLength).as_deref(),
+            Some("0")
+        );
+    }
+
     /// `Content-Length` values follow the `1*DIGIT` grammar at the record entry points too:
     /// linear whitespace around the digits is tolerated, a sign is not.
     #[test]
