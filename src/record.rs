@@ -151,6 +151,30 @@ impl AsMut<IndexMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
     }
 }
 
+/// Reject a header whose name or value would serialize to a record no reader could parse
+/// back: an unknown name outside the parser's token grammar, or a value containing the bare
+/// `\r` or `\n` that would inject header lines or terminate the block early.
+pub fn validate_header(header: &WarcHeader, value: &[u8]) -> Result<(), WarcError> {
+    if let WarcHeader::Unknown(name) = header {
+        let valid_token = !name.is_empty() && name.bytes().all(crate::is_header_token_char);
+        if !valid_token {
+            return Err(WarcError::MalformedHeader(
+                header.clone(),
+                "name is not a valid header token".to_string(),
+            ));
+        }
+    }
+
+    if value.contains(&b'\r') || value.contains(&b'\n') {
+        return Err(WarcError::MalformedHeader(
+            header.clone(),
+            "value contains a line break".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Remove `header` from the raw headers, decoding its value as UTF-8.
 fn take_utf8_header(
     headers: &mut RawRecordHeader,
@@ -478,6 +502,7 @@ impl<T: BodyKind> Record<T> {
         V: Into<String>,
     {
         let value = value.into();
+        validate_header(&header, value.as_bytes())?;
         match &header {
             WarcHeader::Date => {
                 let old_date =
@@ -959,7 +984,6 @@ mod record_tests {
 
     /// Values that would inject header lines, or end the header block early, are rejected.
     #[test]
-    #[ignore = "known bug (header injection): fix incoming"]
     fn set_header_rejects_values_with_line_breaks() {
         let mut record = Record::<BufferedBody>::default();
 
@@ -986,7 +1010,6 @@ mod record_tests {
 
     /// Unknown header names outside the parser's token grammar are rejected.
     #[test]
-    #[ignore = "known bug (header injection): fix incoming"]
     fn set_header_rejects_invalid_unknown_names() {
         let mut record = Record::<BufferedBody>::default();
 
