@@ -130,6 +130,11 @@ fn read_body<R: BufRead>(reader: &mut R, expected_body_len: usize) -> Result<Vec
 
         // we expect 4 characters (`\r\n\r\n`) after the body
         if bytes_read == 2 && body_bytes_read == maximum_read_range {
+            if &body_buffer[expected_body_len..] != b"\r\n\r\n" {
+                let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
+                    nom::Err::Failure((vec![0x0d, 0x0a, 0x0d, 0x0a], nom::error::ErrorKind::Tag));
+                return Err(Error::ParseHeaders(synthetic_err));
+            }
             body_buffer.truncate(expected_body_len);
             return Ok(body_buffer);
         }
@@ -361,7 +366,6 @@ mod iter_raw_tests {
     }
 
     #[test]
-    #[ignore = "known bug (terminator not validated): fix incoming"]
     fn invalid_record_terminator() {
         // After the 4-byte body, the record ends with `c\nd\n` instead of `\r\n\r\n`; the byte
         // counts line up, but the terminator bytes are wrong.
