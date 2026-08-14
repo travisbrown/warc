@@ -529,6 +529,9 @@ impl<T: BodyKind> Record<T> {
     ///
     /// Setting `WARC-Concurrent-To` replaces every value of the repeatable field, returning
     /// the first previous value; to append a value instead, use `add_concurrent_to`.
+    /// `Content-Length` is derived from the body and cannot be changed here: an equivalent
+    /// value is accepted and returns the canonical previous value, while a mismatch is an
+    /// error.
     ///
     /// # Errors
     ///
@@ -582,8 +585,9 @@ impl<T: BodyKind> Record<T> {
                 }))
             }
             WarcHeader::ContentLength => {
-                if Record::parse_content_length(&value)? == self.body.content_length() {
-                    Ok(Some(Cow::Owned(value)))
+                let content_length = self.body.content_length();
+                if Record::parse_content_length(&value)? == content_length {
+                    Ok(Some(Cow::Owned(content_length.to_string())))
                 } else {
                     Err(WarcError::MalformedHeader(
                         WarcHeader::ContentLength,
@@ -1486,7 +1490,6 @@ mod record_tests {
     /// Setting the derived content length returns its canonical previous value, not the
     /// caller's alternate but equivalent spelling.
     #[test]
-    #[ignore = "known bug (new content-length returned as previous): fix incoming"]
     fn set_header_content_length_returns_canonical_previous_value() {
         let mut record = Record::<EmptyBody>::default();
 
