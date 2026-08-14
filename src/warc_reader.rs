@@ -105,6 +105,11 @@ fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> 
         )
     })?;
 
+    // A record without `Content-Length` cannot be framed: there is no way to know where its
+    // body ends.
+    let expected_body_len =
+        expected_body_len.ok_or(Error::MissingHeader(WarcHeader::ContentLength))?;
+
     // The specification forbids repeating any named field except `WARC-Concurrent-To`, whose
     // values are all preserved in order of appearance.
     let mut header_map = indexmap::IndexMap::with_capacity(headers.len());
@@ -495,7 +500,6 @@ mod iter_raw_tests {
     /// A record without `Content-Length` cannot be framed; it is rejected with an error naming
     /// the missing field rather than misread as having an empty body.
     #[test]
-    #[ignore = "known bug (missing content-length accepted): fix incoming"]
     fn missing_content_length_is_rejected() {
         let raw = b"\
             WARC/1.1\r\n\
