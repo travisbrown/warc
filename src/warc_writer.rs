@@ -303,7 +303,6 @@ mod write_raw_tests {
     /// WARC 1.0 dates have second precision, even when the stored instant includes a
     /// fractional second.
     #[test]
-    #[ignore = "known bug (1.0 writer emits subsecond dates): fix incoming"]
     fn warc_1_0_writing_omits_subseconds() {
         let mut record = crate::Record::<crate::BufferedBody>::default();
         record

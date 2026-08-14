@@ -1,4 +1,4 @@
-use chrono::prelude::*;
+use chrono::Utc;
 use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::fmt;
@@ -11,6 +11,7 @@ use crate::header::WarcHeader;
 use crate::record_type::RecordType;
 use crate::truncated_type::TruncatedType;
 use crate::version::WarcVersion;
+use crate::warc_date::WarcDate;
 
 use streaming_trait::BodyKind;
 pub use streaming_trait::{BufferedBody, EmptyBody, StreamingBody};
@@ -256,7 +257,7 @@ impl Record<EmptyBody> {
         let record_id = take_required_utf8_header(&mut headers, &WarcHeader::RecordID)?;
 
         let record_date = take_required_utf8_header(&mut headers, &WarcHeader::Date)
-            .and_then(|date| Self::parse_record_date(&date))?;
+            .and_then(|date| Self::parse_record_date(headers.version, &date))?;
 
         let truncated_type =
             take_utf8_header(&mut headers, &WarcHeader::Truncated)?.map(TruncatedType::from);
@@ -333,9 +334,7 @@ pub struct RecordBuilder {
 ///
 /// A record is guaranteed to be valid according to the specification it conforms to, except:
 /// * The validity of the WARC-Record-ID header is not checked
-/// * Date information not in the UTC timezone will be silently converted to UTC
-/// * Reduced-granularity WARC 1.1 dates (from `YYYY` down to minutes) are expanded to the
-///   earliest instant they denote
+/// * WARC 1.1 date information not in the UTC timezone will be silently converted to UTC
 ///
 /// All header values in a record are guaranteed to be valid UTF-8: converting a
 /// `RawRecordHeader` containing a non-UTF-8 header value fails with
@@ -350,7 +349,7 @@ pub struct RecordBuilder {
 pub struct Record<T: BodyKind> {
     // NB: invariant: does not contain the headers stored in the struct
     headers: RawRecordHeader,
-    record_date: DateTime<Utc>,
+    record_date: WarcDate,
     record_id: String,
     record_type: RecordType,
     truncated_type: Option<TruncatedType>,
@@ -423,10 +422,8 @@ impl Record<EmptyBody> {
         })
     }
 
-    fn parse_record_date(date: &str) -> Result<DateTime<Utc>, WarcError> {
-        parse_w3c_date(date).ok_or_else(|| {
-            WarcError::MalformedHeader(WarcHeader::Date, "not a W3C-DTF timestamp".to_string())
-        })
+    fn parse_record_date(version: WarcVersion, date: &str) -> Result<WarcDate, WarcError> {
+        WarcDate::parse(date, version)
     }
 }
 
@@ -463,14 +460,19 @@ impl<T: BodyKind> Record<T> {
         self.record_type = type_;
     }
 
-    /// Return the WARC-Date header for this record.
-    pub const fn date(&self) -> DateTime<Utc> {
+    /// Return this record's WARC date, including its declared precision.
+    ///
+    /// Use [`header`](Self::header) to obtain the value as rendered for this record's WARC
+    /// version.
+    pub const fn date(&self) -> WarcDate {
         self.record_date
     }
 
-    /// Set the WARC-Date header for this record.
-    pub const fn set_date(&mut self, date: DateTime<Utc>) {
-        self.record_date = date;
+    /// Set this record's WARC date.
+    ///
+    /// A [`chrono::DateTime<Utc>`] is accepted directly and converted to a [`WarcDate`].
+    pub fn set_date<D: Into<WarcDate>>(&mut self, date: D) {
+        self.record_date = date.into();
     }
 
     /// Return the WARC-Truncated header for this record.
@@ -504,7 +506,7 @@ impl<T: BodyKind> Record<T> {
             WarcHeader::RecordID => Some(Cow::Borrowed(self.warc_id())),
             WarcHeader::WarcType => Some(Cow::Owned(self.record_type.to_string())),
             WarcHeader::Date => Some(Cow::Owned(
-                self.date().to_rfc3339_opts(SecondsFormat::AutoSi, true),
+                self.date().to_string_for_version(self.warc_version()),
             )),
             WarcHeader::Truncated => self
                 .truncated_type
@@ -555,11 +557,10 @@ impl<T: BodyKind> Record<T> {
         validate_header(&header, value.as_bytes())?;
         match &header {
             WarcHeader::Date => {
-                let old_date =
-                    std::mem::replace(&mut self.record_date, Record::parse_record_date(&value)?);
-                Ok(Some(Cow::Owned(
-                    old_date.to_rfc3339_opts(SecondsFormat::AutoSi, true),
-                )))
+                let version = self.warc_version();
+                let new_date = Record::parse_record_date(version, &value)?;
+                let old_date = std::mem::replace(&mut self.record_date, new_date);
+                Ok(Some(Cow::Owned(old_date.to_string_for_version(version))))
             }
             WarcHeader::RecordID => {
                 let old_id = std::mem::replace(&mut self.record_id, value);
@@ -661,9 +662,7 @@ impl<T: BodyKind> Record<T> {
     where
         F: FnMut(&WarcHeader, &[u8]) -> Result<(), E>,
     {
-        let date = self
-            .record_date
-            .to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let date = self.record_date.to_string_for_version(self.warc_version());
         let content_length = self.body.content_length().to_string();
 
         visit(&WarcHeader::WarcType, self.record_type.as_str().as_bytes())?;
@@ -696,7 +695,7 @@ impl<T: BodyKind> Record<T> {
         headers.insert(
             WarcHeader::Date,
             self.record_date
-                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
+                .to_string_for_version(self.warc_version())
                 .into(),
         );
         if let Some(truncated_type) = &self.truncated_type {
@@ -845,7 +844,7 @@ impl<T: BodyKind + Default> Default for Record<T> {
                 headers: IndexMap::new(),
                 concurrent_to: Vec::new(),
             },
-            record_date: Utc::now(),
+            record_date: Utc::now().into(),
             record_id: Record::generate_record_id(),
             record_type: RecordType::Resource,
             truncated_type: None,
@@ -874,9 +873,11 @@ impl RecordBuilder {
         self
     }
 
-    /// Set the record date header of the record under construction.
+    /// Set the WARC date of the record under construction.
+    ///
+    /// A [`chrono::DateTime<Utc>`] is accepted directly and converted to a [`WarcDate`].
     #[must_use]
-    pub const fn date(mut self, date: DateTime<Utc>) -> Self {
+    pub fn date<D: Into<WarcDate>>(mut self, date: D) -> Self {
         self.value.set_date(date);
 
         self
@@ -986,53 +987,6 @@ impl RecordBuilder {
 
         Ok(value)
     }
-}
-
-/// Parse a [W3C-DTF](https://www.w3.org/TR/NOTE-datetime) timestamp at any of the granularities
-/// WARC 1.1 permits for `WARC-Date`, from `YYYY` down to fractions of a second.
-///
-/// Reduced-granularity values are expanded to the earliest instant they denote.
-fn parse_w3c_date(date: &str) -> Option<DateTime<Utc>> {
-    // `YYYY-MM-DDThh:mm:ssTZD`, with or without a decimal fraction of a second.
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(date) {
-        return Some(parsed.to_utc());
-    }
-
-    let date_only = match date.len() {
-        // `YYYY`
-        4 => NaiveDate::from_ymd_opt(parse_digits(date)?, 1, 1),
-        // `YYYY-MM`
-        7 => {
-            let (year, month) = date.split_once('-')?;
-            NaiveDate::from_ymd_opt(parse_digits(year)?, parse_digits(month)?, 1)
-        }
-        // `YYYY-MM-DD`
-        10 => NaiveDate::parse_from_str(date, "%Y-%m-%d").ok(),
-        // `YYYY-MM-DDThh:mmTZD`
-        _ => {
-            if let Some(minutes) = date.strip_suffix('Z') {
-                return Some(
-                    NaiveDateTime::parse_from_str(minutes, "%Y-%m-%dT%H:%M")
-                        .ok()?
-                        .and_utc(),
-                );
-            }
-
-            return DateTime::parse_from_str(date, "%Y-%m-%dT%H:%M%:z")
-                .ok()
-                .map(|parsed| parsed.to_utc());
-        }
-    }?;
-
-    Some(date_only.and_time(NaiveTime::MIN).and_utc())
-}
-
-/// Parse an unsigned decimal value, rejecting the signs and whitespace `parse` would accept.
-fn parse_digits<T: std::str::FromStr>(value: &str) -> Option<T> {
-    value
-        .bytes()
-        .all(|byte| byte.is_ascii_digit())
-        .then(|| value.parse().ok())?
 }
 
 #[cfg(test)]
@@ -1258,8 +1212,8 @@ mod record_tests {
         assert_eq!(record.content_length(), 0);
         assert_eq!(record.warc_version(), crate::WarcVersion::V1_1);
         assert_eq!(record.warc_type(), &RecordType::Resource);
-        assert!(record.date() > before);
-        assert!(record.date() < after);
+        assert!(record.date().date_time() > before);
+        assert!(record.date().date_time() < after);
     }
 
     #[test]
@@ -1338,16 +1292,15 @@ mod record_tests {
         );
     }
 
-    /// WARC 1.1 permits `WARC-Date` at any W3C-DTF granularity; reduced-granularity values
-    /// denote their earliest instant.
+    /// WARC 1.1 permits `WARC-Date` at any W3C-DTF granularity, which survives parsing.
     #[test]
     fn parse_record_date_granularities() {
         let expectations = [
-            ("2020", "2020-01-01T00:00:00Z"),
-            ("2020-07", "2020-07-01T00:00:00Z"),
-            ("2020-07-08", "2020-07-08T00:00:00Z"),
-            ("2020-07-08T02:52Z", "2020-07-08T02:52:00Z"),
-            ("2020-07-08T02:52+01:00", "2020-07-08T01:52:00Z"),
+            ("2020", "2020"),
+            ("2020-07", "2020-07"),
+            ("2020-07-08", "2020-07-08"),
+            ("2020-07-08T02:52Z", "2020-07-08T02:52Z"),
+            ("2020-07-08T02:52+01:00", "2020-07-08T01:52Z"),
             ("2020-07-08T02:52:55Z", "2020-07-08T02:52:55Z"),
             (
                 "2020-07-08T02:52:55.123456789Z",
@@ -1356,16 +1309,19 @@ mod record_tests {
         ];
 
         for (value, expected) in expectations {
-            let parsed = Record::parse_record_date(value).expect(value);
+            let parsed = Record::parse_record_date(crate::WarcVersion::V1_1, value).expect(value);
             assert_eq!(
-                parsed.to_rfc3339_opts(SecondsFormat::AutoSi, true),
+                parsed.to_string_for_version(crate::WarcVersion::V1_1),
                 expected,
                 "{value}"
             );
         }
 
         for invalid in ["yesterday", "202", "2020-7", "2020-07-08T02Z", "20200708"] {
-            assert!(Record::parse_record_date(invalid).is_err(), "{invalid}");
+            assert!(
+                Record::parse_record_date(crate::WarcVersion::V1_1, invalid).is_err(),
+                "{invalid}"
+            );
         }
     }
 
@@ -1527,7 +1483,7 @@ mod record_tests {
     #[test]
     fn set_header_override_warc_date() {
         let mut record = Record::<BufferedBody>::default();
-        let old_date = record.date().to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let old_date = record.header(WarcHeader::Date).unwrap().into_owned();
         assert_eq!(record.header(WarcHeader::Date).unwrap(), old_date);
         assert!(record.set_header(WarcHeader::Date, "yesterday").is_err());
         assert_eq!(
@@ -2079,7 +2035,8 @@ mod builder_tests {
         const DATE_STRING_1: &[u8] = b"2020-07-18T02:12:45Z";
 
         let mut builder = RecordBuilder::default();
-        builder = builder.date(Record::parse_record_date(DATE_STRING_0).unwrap());
+        builder = builder
+            .date(Record::parse_record_date(crate::WarcVersion::V1_1, DATE_STRING_0).unwrap());
 
         let record = builder.clone().build().unwrap();
         assert_eq!(
