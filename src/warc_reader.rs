@@ -341,6 +341,9 @@ pub struct StreamingIter<'r, R> {
     /// terminator, so that `skip_body` does not read it a second time.
     terminator_consumed: bool,
     first_record: bool,
+    /// Set once the input has cleanly ended, so that further calls keep returning `None`
+    /// instead of probing the exhausted stream again.
+    finished: bool,
     header_buffer: Vec<u8>,
 }
 
@@ -351,6 +354,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
             current_item_size: 0,
             terminator_consumed: false,
             first_record: true,
+            finished: false,
             header_buffer: Vec::new(),
         }
     }
@@ -398,17 +402,26 @@ impl<R: BufRead> StreamingIter<'_, R> {
     /// Returns one of the following:
     /// * `Some(Ok(r))` is the next record read from the stream.
     /// * `Some(Err)` indicates there was a read error.
-    /// * `None` indicates no more records are returned.
+    /// * `None` indicates no more records are returned. The iterator is fused: once the input
+    ///   has cleanly ended, every further call returns `None`.
     pub fn next_item(&mut self) -> Option<Result<Record<StreamingBody<'_, R>>, Error>> {
+        if self.finished {
+            return None;
+        }
+
         if self.first_record {
             self.first_record = false;
         } else if let Err(e) = self.skip_body() {
             return Some(Err(e));
         }
 
-        match read_header_block(self.reader, &mut self.header_buffer)? {
-            Ok(()) => {}
-            Err(e) => return Some(Err(e)),
+        match read_header_block(self.reader, &mut self.header_buffer) {
+            None => {
+                self.finished = true;
+                return None;
+            }
+            Some(Ok(())) => {}
+            Some(Err(e)) => return Some(Err(e)),
         }
 
         let (headers, expected_body_len) = match parse_header_block(&self.header_buffer) {
@@ -1294,7 +1307,6 @@ mod next_item_tests {
     /// After the final `None`, further calls keep returning `None` instead of yielding a
     /// spurious error for a body the iterator already consumed.
     #[test]
-    #[ignore = "known bug (next_item not fused): fix incoming"]
     fn next_item_is_fused_after_end() {
         let raw = b"\
             WARC/1.1\r\n\
