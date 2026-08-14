@@ -27,7 +27,7 @@ fn version(input: &[u8]) -> IResult<&[u8], &str> {
 /// or tab continues the previous field value, and each fold is read as a single space. Values
 /// are borrowed unless folding forces a copy.
 #[allow(clippy::type_complexity)]
-fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
+fn header(input: &[u8]) -> IResult<&[u8], (&str, Cow<'_, [u8]>)> {
     let (input, (token, _, _, _, value, _)) = (
         take_while1(crate::is_header_token_char),
         space0,
@@ -54,6 +54,10 @@ fn header(input: &[u8]) -> IResult<&[u8], (&[u8], Cow<'_, [u8]>)> {
         Cow::Owned(folded)
     };
 
+    // Tokens come from `take_while1(is_header_token_char)`, which admits only ASCII bytes,
+    // so this conversion cannot fail.
+    let token = str::from_utf8(token).expect("invariant violation: header token is not ASCII");
+
     Ok((input, (token, value)))
 }
 
@@ -75,17 +79,15 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, Cow<'_, [u8]>)>
 
     // Errors carry the offending field name rather than the remaining input, so they point at
     // the culprit. The value cannot be carried: a folded value is owned by this function.
-    for header in headers {
-        let token_str = str::from_utf8(header.0).map_err(|_| verify_error(header.0))?;
-
-        if content_length.is_none() && token_str.eq_ignore_ascii_case("content-length") {
-            let value_str = str::from_utf8(&header.1).map_err(|_| verify_error(header.0))?;
-            let len =
-                crate::parse_content_length(value_str).ok_or_else(|| verify_error(header.0))?;
+    for (token, value) in headers {
+        if content_length.is_none() && token.eq_ignore_ascii_case("content-length") {
+            let value_str = str::from_utf8(&value).map_err(|_| verify_error(token.as_bytes()))?;
+            let len = crate::parse_content_length(value_str)
+                .ok_or_else(|| verify_error(token.as_bytes()))?;
             content_length = Some(len);
         }
 
-        warc_headers.push((token_str, header.1));
+        warc_headers.push((token, value));
     }
 
     Ok((input, (version, warc_headers, content_length)))
@@ -134,7 +136,7 @@ mod tests {
             header(&b"some-header: all/the/things\r\n"[..]),
             Ok((
                 &b""[..],
-                (&b"some-header"[..], Cow::Borrowed(&b"all/the/things"[..]))
+                ("some-header", Cow::Borrowed(&b"all/the/things"[..]))
             ))
         );
 
@@ -142,10 +144,7 @@ mod tests {
             header(&b"another-header : with extra spaces\r\n"[..]),
             Ok((
                 &b""[..],
-                (
-                    &b"another-header"[..],
-                    Cow::Borrowed(&b"with extra spaces"[..])
-                )
+                ("another-header", Cow::Borrowed(&b"with extra spaces"[..]))
             ))
         );
 
@@ -163,7 +162,7 @@ mod tests {
             Ok((
                 &b""[..],
                 (
-                    &b"folded-header"[..],
+                    "folded-header",
                     Cow::Owned(b"line one line two line three".to_vec())
                 )
             ))
@@ -174,7 +173,7 @@ mod tests {
             header(&b"folded-header: one\r\n two\r\nnext-header: value\r\n"[..]),
             Ok((
                 &b"next-header: value\r\n"[..],
-                (&b"folded-header"[..], Cow::Owned(b"one two".to_vec()))
+                ("folded-header", Cow::Owned(b"one two".to_vec()))
             ))
         );
     }
