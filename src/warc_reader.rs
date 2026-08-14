@@ -691,6 +691,31 @@ mod iter_raw_tests {
         assert_eq!(body, expected_body);
     }
 
+    /// WARC 1.0 requires complete UTC timestamps with second precision.
+    #[test]
+    #[ignore = "known bug (1.0 reader accepts subsecond dates): fix incoming"]
+    fn warc_1_0_reading_rejects_subseconds() {
+        let raw = b"\
+            WARC/1.0\r\n\
+            WARC-Type: resource\r\n\
+            Content-Length: 0\r\n\
+            WARC-Record-ID: <urn:test:warc-1.0-date:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55.123456Z\r\n\
+            \r\n\
+            \r\n\
+            \r\n\
+        ";
+
+        let result = WarcReader::new(create_reader!(raw))
+            .iter_records()
+            .next()
+            .unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::MalformedHeader(WarcHeader::Date, _))
+        ));
+    }
+
     /// A field value folded across lines with leading whitespace is unfolded, each fold
     /// reading as a single space.
     #[test]
