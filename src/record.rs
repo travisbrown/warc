@@ -954,6 +954,7 @@ impl RecordBuilder {
     /// build.
     #[must_use]
     pub fn header<V: Into<Vec<u8>>>(mut self, key: WarcHeader, value: V) -> Self {
+        let key = key.normalized();
         let value = value.into();
         match Self::set_raw_header(&mut self.value, key.clone(), &value) {
             Ok(()) => {
@@ -969,17 +970,15 @@ impl RecordBuilder {
 
     /// Build a raw record header from the data collected in this builder.
     ///
-    /// A body set in this builder will be returned raw.
-    #[must_use]
-    pub fn build_raw(self) -> (RawRecordHeader, Vec<u8>) {
-        let Self {
-            value,
-            broken_headers,
-        } = self;
-        let (mut headers, body) = value.into_raw_parts();
-        headers.as_mut().extend(broken_headers);
-
-        (headers, body)
+    /// A body set in this builder will be returned raw. Rejected header values are retried
+    /// against the finished record just as they are in [`build`](Self::build).
+    ///
+    /// # Errors
+    ///
+    /// Returns the error for the first header value that is still not valid for the
+    /// finished record.
+    pub fn build_raw(self) -> Result<(RawRecordHeader, Vec<u8>), WarcError> {
+        self.build().map(Record::into_raw_parts)
     }
 
     /// Build a record from the data collected in this builder.
@@ -1850,7 +1849,7 @@ mod builder_tests {
 
     #[test]
     fn default() {
-        let (headers, body) = RecordBuilder::default().build_raw();
+        let (headers, body) = RecordBuilder::default().build_raw().unwrap();
         assert_eq!(headers.version, crate::WarcVersion::V1_1);
         assert_eq!(
             headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
@@ -1867,7 +1866,8 @@ mod builder_tests {
     fn default_with_body() {
         let (headers, body) = RecordBuilder::default()
             .body(b"abcdef".to_vec())
-            .build_raw();
+            .build_raw()
+            .unwrap();
         assert_eq!(headers.version, crate::WarcVersion::V1_1);
         assert_eq!(
             headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
@@ -1887,9 +1887,9 @@ mod builder_tests {
     #[test]
     fn impl_eq_raw() {
         let builder = RecordBuilder::default();
-        let raw1 = builder.clone().build_raw();
+        let raw1 = builder.clone().build_raw().unwrap();
 
-        let raw2 = builder.build_raw();
+        let raw2 = builder.build_raw().unwrap();
         assert_eq!(raw1, raw2);
     }
 
@@ -1960,6 +1960,7 @@ mod builder_tests {
             builder
                 .clone()
                 .build_raw()
+                .unwrap()
                 .0
                 .as_ref()
                 .get(&WarcHeader::ContentLength)
@@ -1968,16 +1969,10 @@ mod builder_tests {
         );
 
         builder = builder.header(WarcHeader::ContentLength, "1");
-        assert_eq!(
-            builder
-                .clone()
-                .build_raw()
-                .0
-                .as_ref()
-                .get(&WarcHeader::ContentLength)
-                .unwrap(),
-            &b"1".to_vec()
-        );
+        match builder.clone().build_raw() {
+            Err(Error::MalformedHeader(WarcHeader::ContentLength, _)) => {}
+            other => panic!("expected an error blaming content-length, got {other:?}"),
+        }
 
         assert!(builder.build().is_err());
     }
@@ -2000,20 +1995,30 @@ mod builder_tests {
 
     /// A later valid spelling of the same normalized field cures an earlier rejected value.
     #[test]
-    #[ignore = "known bug (equivalent spelling does not cure header): fix incoming"]
     fn broken_header_is_cured_by_an_equivalent_spelling() {
-        let record = RecordBuilder::default()
+        let builder = RecordBuilder::default()
             .header(
                 WarcHeader::Unknown("WARC-Date".to_string()),
                 "not-a-dayTor:a:time",
             )
-            .header(WarcHeader::Date, "2020-07-08T02:52:55Z")
-            .build()
-            .unwrap();
+            .header(WarcHeader::Date, "2020-07-08T02:52:55Z");
+
+        let record = builder.clone().build().unwrap();
 
         assert_eq!(
             record.header(WarcHeader::Date).unwrap(),
             "2020-07-08T02:52:55Z"
+        );
+
+        let (headers, _) = builder.build_raw().unwrap();
+        assert_eq!(
+            headers.as_ref().get(&WarcHeader::Date).unwrap(),
+            b"2020-07-08T02:52:55Z"
+        );
+        assert!(
+            !headers
+                .as_ref()
+                .contains_key(&WarcHeader::Unknown("WARC-Date".to_string()))
         );
     }
 
@@ -2087,6 +2092,7 @@ mod builder_tests {
             builder
                 .clone()
                 .build_raw()
+                .unwrap()
                 .0
                 .as_ref()
                 .get(&WarcHeader::Date)
@@ -2109,6 +2115,7 @@ mod builder_tests {
             builder
                 .clone()
                 .build_raw()
+                .unwrap()
                 .0
                 .as_ref()
                 .get(&WarcHeader::Date)
@@ -2142,6 +2149,7 @@ mod builder_tests {
             builder
                 .clone()
                 .build_raw()
+                .unwrap()
                 .0
                 .as_ref()
                 .get(&WarcHeader::RecordID)
@@ -2163,6 +2171,7 @@ mod builder_tests {
         assert_eq!(
             builder
                 .build_raw()
+                .unwrap()
                 .0
                 .as_ref()
                 .get(&WarcHeader::RecordID)
@@ -2193,6 +2202,7 @@ mod builder_tests {
             builder
                 .clone()
                 .build_raw()
+                .unwrap()
                 .0
                 .as_ref()
                 .get(&WarcHeader::Truncated)
@@ -2215,6 +2225,7 @@ mod builder_tests {
             builder
                 .clone()
                 .build_raw()
+                .unwrap()
                 .0
                 .as_ref()
                 .get(&WarcHeader::Truncated)
@@ -2240,6 +2251,7 @@ mod builder_tests {
         assert_eq!(
             builder
                 .build_raw()
+                .unwrap()
                 .0
                 .as_ref()
                 .get(&WarcHeader::Truncated)
