@@ -105,12 +105,20 @@ fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> 
         )
     })?;
 
+    // The specification forbids repeating a field (other than `WARC-Concurrent-To`, which this
+    // representation cannot hold more than once). If a record repeats one anyway, keep the
+    // first occurrence: it is the `Content-Length` the parser framed the body with, so the
+    // headers reported always match the body actually read.
+    let mut header_map = indexmap::IndexMap::with_capacity(headers.len());
+    for (token, value) in headers {
+        header_map
+            .entry(token.into())
+            .or_insert_with(|| value.into_owned());
+    }
+
     let headers = RawRecordHeader {
         version: version.to_owned(),
-        headers: headers
-            .into_iter()
-            .map(|(token, value)| (token.into(), value.to_owned()))
-            .collect(),
+        headers: header_map,
     };
 
     Ok((headers, expected_body_len))
@@ -420,7 +428,6 @@ mod iter_raw_tests {
     /// A field value folded across lines with leading whitespace is unfolded, each fold
     /// reading as a single space.
     #[test]
-    #[ignore = "known bug (WARC grammar divergence): fix incoming"]
     fn folded_header_value_is_unfolded() {
         let raw = b"\
             WARC/1.1\r\n\
@@ -451,7 +458,6 @@ mod iter_raw_tests {
     /// the first occurrence wins consistently: the body is framed by the first
     /// `Content-Length`, so the surviving header values must be the first ones too.
     #[test]
-    #[ignore = "known bug (WARC grammar divergence): fix incoming"]
     fn repeated_field_keeps_first_occurrence() {
         let raw = b"\
             WARC/1.1\r\n\
