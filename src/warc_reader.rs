@@ -355,9 +355,32 @@ mod iter_raw_tests {
     use std::io::{BufReader, Cursor};
     use std::iter::FromIterator;
 
-    use crate::{WarcHeader, WarcReader};
+    use crate::{Error, WarcHeader, WarcReader};
     macro_rules! create_reader {
         ($raw:expr) => {{ BufReader::new(Cursor::new($raw.get(..).unwrap())) }};
+    }
+
+    #[test]
+    #[ignore = "known bug (terminator not validated): fix incoming"]
+    fn invalid_record_terminator() {
+        // After the 4-byte body, the record ends with `c\nd\n` instead of `\r\n\r\n`; the byte
+        // counts line up, but the terminator bytes are wrong.
+        let raw = b"\
+            WARC/1.0\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 4\r\n\
+            \r\n\
+            a\nb\nc\nd\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::ParseHeaders(_)) => {}
+            other => panic!(
+                "expected a parse error for an invalid record terminator, got {:?}",
+                other.map(|(headers, body)| (headers, String::from_utf8_lossy(&body).to_string()))
+            ),
+        }
     }
 
     #[test]
