@@ -147,13 +147,27 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             })
             .and_then(|date| Record::parse_record_date(&date))?;
 
+        let truncated_type = headers
+            .as_mut()
+            .shift_remove(&WarcHeader::Truncated)
+            .map(|vec| {
+                String::from_utf8(vec).map_err(|_| {
+                    WarcError::MalformedHeader(
+                        WarcHeader::Truncated,
+                        "not a UTF-8 string".to_string(),
+                    )
+                })
+            })
+            .transpose()?
+            .map(TruncatedType::from);
+
         Ok(Record {
             headers,
             record_date,
             record_id,
             record_type,
+            truncated_type,
             body: EmptyBody(),
-            ..Default::default()
         })
     }
 }
@@ -364,6 +378,10 @@ impl<T: BodyKind> Record<T> {
             WarcHeader::Date => Some(Cow::Owned(
                 self.date().to_rfc3339_opts(SecondsFormat::Secs, true),
             )),
+            WarcHeader::Truncated => self
+                .truncated_type
+                .as_ref()
+                .map(|truncated_type| Cow::Owned(truncated_type.to_string())),
             _ => self
                 .headers
                 .as_ref()
@@ -586,16 +604,14 @@ impl<'t, T: Read> Record<StreamingBody<'t, T>> {
             body_vec
         };
 
-        let empty_record = Record {
+        Ok(Record {
             headers,
             record_date,
             record_id,
             record_type,
             truncated_type,
-            ..Default::default()
-        };
-
-        Ok(empty_record.add_body(buf))
+            body: BufferedBody(buf),
+        })
     }
 }
 
@@ -900,7 +916,6 @@ mod record_tests {
     }
 
     #[test]
-    #[ignore = "known bug (WARC-Truncated dropped): fix incoming"]
     fn get_header_truncated() {
         let mut record = Record::<BufferedBody>::default();
         assert!(record.header(WarcHeader::Truncated).is_none());
@@ -1148,7 +1163,6 @@ mod raw_tests {
     }
 
     #[test]
-    #[ignore = "known bug (WARC-Truncated dropped): fix incoming"]
     fn verify_truncated_type_is_extracted() {
         let headers = headers_with(WarcHeader::Truncated, b"length".to_vec());
         let record = Record::<EmptyBody>::try_from(headers).unwrap();
