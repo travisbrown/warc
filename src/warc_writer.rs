@@ -124,6 +124,76 @@ mod write_raw_tests {
     use crate::{RawRecordHeader, WarcHeader};
     use std::io::{self, Write};
 
+    /// Assert that writing the given raw header block fails with `InvalidInput` and emits no
+    /// bytes.
+    fn assert_rejected(headers: &RawRecordHeader) {
+        let mut writer = WarcWriter::new(Vec::new());
+        let error = writer
+            .write_raw(headers, b"body!")
+            .expect_err("injection should be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(writer.writer.is_empty(), "no partial record is written");
+    }
+
+    /// Raw header blocks that could not be parsed back are rejected before anything is
+    /// written: injected values, invalid unknown names, an injected version string, and
+    /// injected `WARC-Concurrent-To` values.
+    #[test]
+    #[ignore = "known bug (header injection): fix incoming"]
+    fn write_raw_rejects_header_injection() {
+        let valid = RawRecordHeader {
+            version: "1.1".to_owned(),
+            headers: vec![(WarcHeader::WarcType, b"dunno".to_vec())]
+                .into_iter()
+                .collect(),
+            concurrent_to: Vec::new(),
+        };
+
+        let mut injected_value = valid.clone();
+        injected_value.as_mut().insert(
+            WarcHeader::TargetURI,
+            b"https://a/\r\nwarc-type: evil".to_vec(),
+        );
+        assert_rejected(&injected_value);
+
+        let mut invalid_name = valid.clone();
+        invalid_name
+            .as_mut()
+            .insert(WarcHeader::Unknown("evil name".to_string()), b"v".to_vec());
+        assert_rejected(&invalid_name);
+
+        let mut injected_version = valid.clone();
+        injected_version.version = "1.1\r\nevil: x".to_owned();
+        assert_rejected(&injected_version);
+
+        let mut injected_concurrent_to = valid.clone();
+        injected_concurrent_to
+            .concurrent_to
+            .push(b"<urn:a>\r\nevil: x".to_vec());
+        assert_rejected(&injected_concurrent_to);
+
+        // The base block itself is written without complaint.
+        let mut writer = WarcWriter::new(Vec::new());
+        writer.write_raw(&valid, b"body!").unwrap();
+    }
+
+    /// Typed setters that bypass `set_header` are caught when the record is written.
+    #[test]
+    #[ignore = "known bug (header injection): fix incoming"]
+    fn write_rejects_injection_through_typed_setters() {
+        let mut record = crate::Record::<crate::BufferedBody>::default();
+        record.set_warc_id("<urn:a>\r\nevil: x");
+
+        let mut writer = WarcWriter::new(Vec::new());
+        let error = writer
+            .write(&record)
+            .expect_err("injection should be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(writer.writer.is_empty());
+    }
+
     /// A writer that accepts at most one byte per `write` call.
     struct TrickleWriter(Vec<u8>);
 

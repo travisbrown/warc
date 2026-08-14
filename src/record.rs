@@ -927,7 +927,7 @@ fn parse_digits<T: std::str::FromStr>(value: &str) -> Option<T> {
 #[cfg(test)]
 mod record_tests {
     use crate::header::WarcHeader;
-    use crate::{BufferedBody, EmptyBody, Record, RecordType, TruncatedType};
+    use crate::{BufferedBody, EmptyBody, Error, Record, RecordType, TruncatedType};
 
     use chrono::prelude::*;
 
@@ -954,6 +954,57 @@ mod record_tests {
         assert_eq!(
             stripped.header(WarcHeader::TargetURI).as_deref(),
             Some("https://example.com/")
+        );
+    }
+
+    /// Values that would inject header lines, or end the header block early, are rejected.
+    #[test]
+    #[ignore = "known bug (header injection): fix incoming"]
+    fn set_header_rejects_values_with_line_breaks() {
+        let mut record = Record::<BufferedBody>::default();
+
+        for value in ["a\r\nwarc-type: evil", "a\rb", "a\nb"] {
+            assert!(
+                matches!(
+                    record.set_header(WarcHeader::TargetURI, value),
+                    Err(Error::MalformedHeader(WarcHeader::TargetURI, _))
+                ),
+                "{value:?}"
+            );
+        }
+
+        // Headers backed by typed record fields go through the same validation.
+        assert!(matches!(
+            record.set_header(WarcHeader::RecordID, "<urn:a>\r\nevil: x"),
+            Err(Error::MalformedHeader(WarcHeader::RecordID, _))
+        ));
+        assert!(matches!(
+            record.set_header(WarcHeader::ConcurrentTo, "<urn:a>\r\nevil: x"),
+            Err(Error::MalformedHeader(WarcHeader::ConcurrentTo, _))
+        ));
+    }
+
+    /// Unknown header names outside the parser's token grammar are rejected.
+    #[test]
+    #[ignore = "known bug (header injection): fix incoming"]
+    fn set_header_rejects_invalid_unknown_names() {
+        let mut record = Record::<BufferedBody>::default();
+
+        for name in ["", "evil name", "evil:name", "evil\r\nname"] {
+            let header = WarcHeader::Unknown(name.to_string());
+            assert!(
+                matches!(
+                    record.set_header(header, "value"),
+                    Err(Error::MalformedHeader(WarcHeader::Unknown(_), _))
+                ),
+                "{name:?}"
+            );
+        }
+
+        assert!(
+            record
+                .set_header(WarcHeader::Unknown("x-custom".to_string()), "value")
+                .is_ok()
         );
     }
 
