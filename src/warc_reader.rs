@@ -492,6 +492,31 @@ mod iter_raw_tests {
         }
     }
 
+    /// A record without `Content-Length` cannot be framed; it is rejected with an error naming
+    /// the missing field rather than misread as having an empty body.
+    #[test]
+    #[ignore = "known bug (missing content-length accepted): fix incoming"]
+    fn missing_content_length_is_rejected() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: dunno\r\n\
+            WARC-Record-ID: <urn:test:missing-length:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::MissingHeader(WarcHeader::ContentLength)) => {}
+            other => panic!(
+                "expected a missing content-length error, got {:?}",
+                other.map(|(headers, _)| headers)
+            ),
+        }
+    }
+
     /// `WARC-Concurrent-To` is the one field the specification allows to repeat; every value
     /// is preserved, in order of appearance.
     #[test]
