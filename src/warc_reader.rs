@@ -1,5 +1,5 @@
 use crate::parser;
-use crate::{BufferedBody, Error, MB, RawRecordHeader, Record, StreamingBody};
+use crate::{BufferedBody, Error, MB, RawRecordHeader, Record, StreamingBody, WarcHeader};
 
 use std::convert::TryInto;
 use std::fs;
@@ -105,20 +105,30 @@ fn parse_header_block(buffer: &[u8]) -> Result<(RawRecordHeader, usize), Error> 
         )
     })?;
 
-    // The specification forbids repeating a field (other than `WARC-Concurrent-To`, which this
-    // representation cannot hold more than once). If a record repeats one anyway, keep the
-    // first occurrence: it is the `Content-Length` the parser framed the body with, so the
-    // headers reported always match the body actually read.
+    // The specification forbids repeating any named field except `WARC-Concurrent-To`, whose
+    // values are all preserved in order of appearance.
     let mut header_map = indexmap::IndexMap::with_capacity(headers.len());
+    let mut concurrent_to = Vec::new();
     for (token, value) in headers {
-        header_map
-            .entry(token.into())
-            .or_insert_with(|| value.into_owned());
+        let header: WarcHeader = token.into();
+        if header == WarcHeader::ConcurrentTo {
+            concurrent_to.push(value.into_owned());
+        } else {
+            match header_map.entry(header) {
+                indexmap::map::Entry::Occupied(entry) => {
+                    return Err(Error::DuplicateHeader(entry.key().clone()));
+                }
+                indexmap::map::Entry::Vacant(entry) => {
+                    entry.insert(value.into_owned());
+                }
+            }
+        }
     }
 
     let headers = RawRecordHeader {
         version: version.to_owned(),
         headers: header_map,
+        concurrent_to,
     };
 
     Ok((headers, expected_body_len))
@@ -454,16 +464,14 @@ mod iter_raw_tests {
         );
     }
 
-    /// The specification forbids repeating a named field; when a record repeats one anyway,
-    /// the first occurrence wins consistently: the body is framed by the first
-    /// `Content-Length`, so the surviving header values must be the first ones too.
+    /// The specification forbids repeating any named field except `WARC-Concurrent-To`; a
+    /// record that repeats one is rejected with an error naming the field.
     #[test]
-    fn repeated_field_keeps_first_occurrence() {
+    fn repeated_field_is_rejected() {
         let raw = b"\
             WARC/1.1\r\n\
             WARC-Type: dunno\r\n\
             Content-Length: 5\r\n\
-            Content-Length: 500\r\n\
             WARC-Record-ID: <urn:test:repeated:record-0>\r\n\
             WARC-Date: 2020-07-08T02:52:55Z\r\n\
             WARC-Target-URI: https://example.com/first\r\n\
@@ -474,15 +482,42 @@ mod iter_raw_tests {
         ";
 
         let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::DuplicateHeader(WarcHeader::TargetURI)) => {}
+            other => panic!(
+                "expected a duplicate target-uri error, got {:?}",
+                other.map(|(headers, _)| headers)
+            ),
+        }
+    }
+
+    /// `WARC-Concurrent-To` is the one field the specification allows to repeat; every value
+    /// is preserved, in order of appearance.
+    #[test]
+    fn repeated_concurrent_to_is_preserved() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: request\r\n\
+            Content-Length: 0\r\n\
+            WARC-Record-ID: <urn:test:concurrent:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            WARC-Concurrent-To: <urn:test:concurrent:record-1>\r\n\
+            WARC-Concurrent-To: <urn:test:concurrent:record-2>\r\n\
+            \r\n\
+            \r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
         let (headers, body) = reader.next().unwrap().unwrap();
-        assert_eq!(body, b"12345");
+        assert!(body.is_empty());
+        assert!(headers.as_ref().get(&WarcHeader::ConcurrentTo).is_none());
         assert_eq!(
-            headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
-            &b"5".to_vec()
-        );
-        assert_eq!(
-            headers.as_ref().get(&WarcHeader::TargetURI).unwrap(),
-            &b"https://example.com/first".to_vec()
+            headers.concurrent_to,
+            vec![
+                b"<urn:test:concurrent:record-1>".to_vec(),
+                b"<urn:test:concurrent:record-2>".to_vec(),
+            ]
         );
     }
 
