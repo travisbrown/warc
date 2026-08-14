@@ -497,6 +497,33 @@ mod iter_raw_tests {
         }
     }
 
+    /// A header line that does not match the named-field grammar is rejected with an error
+    /// carrying that line, rather than it (and every line after it) being silently dropped.
+    #[test]
+    #[ignore = "known bug (malformed lines dropped): fix incoming"]
+    fn malformed_header_line_is_rejected() {
+        let raw = b"\
+            WARC/1.1\r\n\
+            WARC-Type: dunno\r\n\
+            bad header line without a colon\r\n\
+            Content-Length: 5\r\n\
+            \r\n\
+            12345\r\n\
+            \r\n\
+        ";
+
+        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        match reader.next().unwrap() {
+            Err(Error::ParseHeaders(nom::Err::Error(e))) => {
+                assert_eq!(e.input, b"bad header line without a colon".to_vec());
+            }
+            other => panic!(
+                "expected a parse error naming the malformed line, got {:?}",
+                other.map(|(headers, _)| headers)
+            ),
+        }
+    }
+
     /// A record without `Content-Length` cannot be framed; it is rejected with an error naming
     /// the missing field rather than misread as having an empty body.
     #[test]
