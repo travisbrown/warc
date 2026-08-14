@@ -36,23 +36,29 @@ impl<W: Write> WarcWriter<W> {
     where
         B: AsRef<[u8]>,
     {
+        let writer = &mut self.writer;
         let mut bytes_written = 0;
+        let mut emit = |data: &[u8]| -> io::Result<()> {
+            writer.write_all(data)?;
+            bytes_written += data.len();
+            Ok(())
+        };
 
-        bytes_written += self.writer.write(b"WARC/")?;
-        bytes_written += self.writer.write(headers.version.as_bytes())?;
-        bytes_written += self.writer.write(b"\r\n")?;
+        emit(b"WARC/")?;
+        emit(headers.version.as_bytes())?;
+        emit(b"\r\n")?;
 
         for (token, value) in headers.as_ref().iter() {
-            bytes_written += self.writer.write(token.to_string().as_bytes())?;
-            bytes_written += self.writer.write(b": ")?;
-            bytes_written += self.writer.write(value)?;
-            bytes_written += self.writer.write(b"\r\n")?;
+            emit(token.to_string().as_bytes())?;
+            emit(b": ")?;
+            emit(value)?;
+            emit(b"\r\n")?;
         }
-        bytes_written += self.writer.write(b"\r\n")?;
+        emit(b"\r\n")?;
 
-        bytes_written += self.writer.write(body.as_ref())?;
-        bytes_written += self.writer.write(b"\r\n")?;
-        bytes_written += self.writer.write(b"\r\n")?;
+        emit(body.as_ref())?;
+        emit(b"\r\n")?;
+        emit(b"\r\n")?;
 
         Ok(bytes_written)
     }
@@ -130,7 +136,6 @@ mod write_raw_tests {
     }
 
     #[test]
-    #[ignore = "known bug (short writes truncate): fix incoming"]
     fn short_writes_do_not_truncate() {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
