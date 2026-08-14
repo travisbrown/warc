@@ -74,6 +74,20 @@ impl WarcHeader {
     }
 }
 
+impl WarcHeader {
+    /// Fold an `Unknown` spelling of a well-known field name (in any case) into that field's
+    /// variant, and lower-case genuinely unknown names, exactly as parsing does. This keeps
+    /// `Unknown("warc-date")` from bypassing the lookups and interception keyed on the
+    /// well-known variants.
+    #[must_use]
+    pub fn normalized(self) -> Self {
+        match self {
+            Self::Unknown(name) => Self::from(name.as_str()),
+            header => header,
+        }
+    }
+}
+
 impl Display for WarcHeader {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
