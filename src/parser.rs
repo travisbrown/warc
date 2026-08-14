@@ -227,6 +227,26 @@ mod tests {
 
     /// A missing `Content-Length` is reported as `None` rather than a parse failure, leaving
     /// the caller to raise an error naming the missing field.
+    /// `Content-Length` follows the `1*DIGIT` grammar strictly: linear whitespace around the
+    /// digits is tolerated, but signs, internal whitespace, and non-digits are not.
+    #[test]
+    #[ignore = "known bug (lax content-length parsing): fix incoming"]
+    fn content_length_grammar() {
+        let block = |value: &str| format!("WARC/1.1\r\ncontent-length: {value}\r\n\r\n");
+
+        for (value, expected) in [("42", 42), ("42 ", 42), ("42\t", 42), ("0", 0)] {
+            let raw = block(value);
+            let parsed = headers(raw.as_bytes()).expect(value);
+            assert_eq!(parsed.1.2, Some(expected), "{value:?}");
+        }
+
+        // The last entry is a pair of non-ASCII (Arabic-Indic) digits.
+        for value in ["+42", "-42", "4 2", "4a", "", "\u{0664}\u{0662}"] {
+            let raw = block(value);
+            assert!(headers(raw.as_bytes()).is_err(), "{value:?}");
+        }
+    }
+
     #[test]
     fn headers_parsing_without_content_length() {
         let raw = b"\
