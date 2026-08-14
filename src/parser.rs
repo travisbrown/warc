@@ -130,6 +130,17 @@ mod tests {
         );
     }
 
+    /// Only the two WARC versions supported by the crate are accepted; empty, older,
+    /// hypothetical newer, and otherwise arbitrary version strings are rejected.
+    #[test]
+    #[ignore = "known bug (unsupported WARC versions accepted): fix incoming"]
+    fn version_rejects_unsupported_values() {
+        for value in ["", "0.0", "1.2", "2.0-alpha", "not-a-version"] {
+            let raw = format!("WARC/{value}\r\n");
+            assert!(version(raw.as_bytes()).is_err(), "{value:?}");
+        }
+    }
+
     #[test]
     fn header_pair_parsing() {
         assert_eq!(
