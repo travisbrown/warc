@@ -1171,6 +1171,16 @@ mod raw_tests {
     }
 
     #[test]
+    #[ignore = "known bug (non-UTF-8 accepted): fix incoming"]
+    fn verify_non_utf8_header_value_is_rejected() {
+        let headers = headers_with(WarcHeader::TargetURI, vec![0xff, 0xfe]);
+        match Record::<EmptyBody>::try_from(headers) {
+            Err(Error::MalformedHeader(WarcHeader::TargetURI, _)) => {}
+            other => panic!("expected malformed target-uri error, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn verify_malformed_record_id_blames_record_id() {
         let headers = headers_with(WarcHeader::RecordID, vec![0xff, 0xfe]);
         match Record::<EmptyBody>::try_from(headers) {
